@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VerifEye — Private face recognition</title>
+  <meta name="description" content="Enroll a face securely on your own VerifEye system.">
+  <link rel="stylesheet" href="/assets/styles.css">
+  <link rel="stylesheet" href="/assets/cameras.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="VerifEye home"><span class="mark" aria-hidden="true"></span>VerifEye</a>
+    <div class="privacy"><span></span> Local & private</div>
+  </header>
+
+  <main>
+    <section id="auth-view" class="auth-layout">
+      <div class="intro">
+        <p class="eyebrow">Your space. Your data.</p>
+        <h1>Recognition that<br><em>stays with you.</em></h1>
+        <p class="lede">A self-hosted security system built around privacy. Your biometric data never leaves your device.</p>
+        <div class="feature-list">
+          <div><span>01</span><p><strong>Local by design</strong>Your data lives on your hardware.</p></div>
+          <div><span>02</span><p><strong>Built for privacy</strong>No cloud accounts or third-party tracking.</p></div>
+          <div><span>03</span><p><strong>You stay in control</strong>Own every part of your security system.</p></div>
+        </div>
+      </div>
+
+      <div class="auth-card">
+        <div class="tabs" role="tablist">
+          <button id="login-tab" class="tab active" role="tab" aria-selected="true">Sign in</button>
+          <button id="register-tab" class="tab" role="tab" aria-selected="false">Create account</button>
+        </div>
+        <div class="card-heading">
+          <p class="kicker">Welcome to VerifEye</p>
+          <h2 id="form-title">Good to see you.</h2>
+          <p id="form-subtitle">Sign in to manage your identity.</p>
+        </div>
+        <form id="auth-form" novalidate>
+          <label id="name-field" class="hidden">Full name<input id="display-name" name="displayName" autocomplete="name" placeholder="Ada Lovelace"></label>
+          <label>Email address<input id="email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required></label>
+          <label>Password<input id="password" name="password" type="password" autocomplete="current-password" placeholder="At least 8 characters" required minlength="8"></label>
+          <p id="auth-error" class="error" role="alert"></p>
+          <button class="primary" type="submit"><span id="submit-label">Sign in</span><span aria-hidden="true">→</span></button>
+        </form>
+        <p class="fine-print">Your account and biometric data are stored only on this VerifEye server.</p>
+      </div>
+    </section>
+
+    <section id="enroll-view" class="dashboard hidden">
+      <div class="dashboard-head">
+        <div><p class="eyebrow">Identity enrollment</p><h1>Welcome, <span id="user-name"></span>.</h1><p>Add a clear photo so VerifEye can recognize you.</p></div>
+        <button id="logout" class="ghost">Sign out</button>
+      </div>
+      <div class="enroll-grid">
+        <form id="enroll-form" class="upload-card">
+          <input id="photo" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+          <button id="drop-zone" class="drop-zone" type="button">
+            <span class="upload-icon" aria-hidden="true">↑</span>
+            <strong>Choose a photo</strong>
+            <span>or drag and drop it here</span>
+            <small>JPEG, PNG or WebP · up to 10 MB</small>
+          </button>
+          <div id="preview-wrap" class="preview-wrap hidden"><img id="preview" alt="Selected enrollment photo"><button id="change-photo" type="button" class="change">Choose another</button></div>
+          <p id="enroll-error" class="error" role="alert"></p>
+          <button id="enroll-button" class="primary" type="submit" disabled><span>Enroll this face</span><span>→</span></button>
+        </form>
+        <aside class="tips">
+          <p class="kicker">For the best result</p>
+          <h2>A few quick tips.</h2>
+          <ul><li>Face the camera directly</li><li>Use even, natural lighting</li><li>Remove sunglasses or face coverings</li><li>Make sure only you are in the photo</li></ul>
+          <div id="success" class="success hidden"><span>✓</span><div><strong>You're enrolled.</strong><p>VerifEye saved your face securely to the local database.</p></div></div>
+        </aside>
+      </div>
+      <section class="camera-section">
+        <div class="section-heading"><div><p class="eyebrow">Live recognition</p><h2>LAN cameras</h2><p>RTSP works the same over wired Ethernet or Wi-Fi.</p></div><button id="discover-onvif" class="ghost">Discover ONVIF</button></div>
+        <form id="camera-form" class="camera-form">
+          <label>Camera name<input id="camera-name" maxlength="100" placeholder="Front door" required></label>
+          <label>RTSP URL<input id="camera-url" type="url" placeholder="rtsp://user:password@192.168.1.20/stream" required></label>
+          <button class="primary" type="submit"><span>Add and start camera</span><span>+</span></button>
+          <p id="camera-error" class="error" role="alert"></p>
+        </form>
+        <div id="onvif-panel" class="onvif-panel hidden"><p id="onvif-status">Searching the LAN…</p><div id="onvif-devices"></div></div>
+        <div id="camera-list" class="camera-list"><p class="empty">No cameras configured.</p></div>
+      </section>
+    </section>
+  </main>
+  <footer><span>VerifEye 2.0</span><span>Self-hosted security, thoughtfully built.</span></footer>
+</body>
+</html>

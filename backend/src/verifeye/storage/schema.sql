@@ -6,6 +6,26 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 
 INSERT OR IGNORE INTO schema_version(version) VALUES (1);
+INSERT OR IGNORE INTO schema_version(version) VALUES (2);
+INSERT OR IGNORE INTO schema_version(version) VALUES (3);
+
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    display_name TEXT NOT NULL,
+    password_hash BLOB NOT NULL,
+    password_salt BLOB NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash BLOB PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS ix_sessions_user_id ON sessions(user_id);
 
 CREATE TABLE IF NOT EXISTS identities (
     id INTEGER PRIMARY KEY,
@@ -37,3 +57,16 @@ CREATE INDEX IF NOT EXISTS ix_face_embeddings_identity
     ON face_embeddings(identity_id);
 CREATE INDEX IF NOT EXISTS ix_face_embeddings_model_dimensions
     ON face_embeddings(model_name, dimensions);
+
+CREATE TABLE IF NOT EXISTS cameras (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    encrypted_url BLOB NOT NULL UNIQUE,
+    url_fingerprint TEXT NOT NULL UNIQUE,
+    sanitized_host TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'manual'
+        CHECK (source_type IN ('manual', 'onvif')),
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
