@@ -7,11 +7,10 @@ import time
 from typing import Callable
 
 import cv2
-import mediapipe as mp
 
 from .models import ActiveCameraLimitReached, CameraStatus, ConnectionState
 from ..recognition import annotate
-from ..vision import process_frame
+from ..vision import create_face_detector, process_frame
 
 
 class LatestFrame:
@@ -94,7 +93,7 @@ class CameraWorker:
                         decoder_done.set()
                 decoder = threading.Thread(target=decode_latest, name=f"camera-{self.camera.id}-decoder", daemon=True)
                 decoder.start()
-                detector = mp.solutions.face_detection.FaceDetection(model_selection=0, min_detection_confidence=.5)
+                detector = create_face_detector(.5)
                 try:
                     sequence = 0
                     while not self._stop.is_set():

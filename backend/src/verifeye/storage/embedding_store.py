@@ -37,6 +37,16 @@ class Match:
     similarity: float
 
 
+@dataclass(frozen=True)
+class IdentityRecord:
+    id: int
+    external_id: str
+    display_name: str
+    created_at: str
+    updated_at: str
+    embeddings: tuple[EmbeddingRecord, ...]
+
+
 class EmbeddingStore:
     """Own a SQLite connection and enforce the recognition vector contract."""
 
@@ -117,6 +127,40 @@ class EmbeddingStore:
             (embedding_id,),
         ).fetchone()
         return self._record(row) if row else None
+
+    def list_identities(self) -> list[IdentityRecord]:
+        identities = self._connection.execute(
+            """SELECT id, external_id, display_name, created_at, updated_at
+               FROM identities ORDER BY display_name COLLATE NOCASE, id"""
+        ).fetchall()
+        embeddings = self._connection.execute(
+            """SELECT e.*, i.external_id, i.display_name
+               FROM face_embeddings e JOIN identities i ON i.id = e.identity_id
+               ORDER BY e.created_at DESC, e.id DESC"""
+        ).fetchall()
+        by_identity: dict[int, list[EmbeddingRecord]] = {}
+        for row in embeddings:
+            by_identity.setdefault(int(row["identity_id"]), []).append(self._record(row))
+        return [
+            IdentityRecord(
+                id=int(row["id"]), external_id=row["external_id"],
+                display_name=row["display_name"], created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                embeddings=tuple(by_identity.get(int(row["id"]), [])),
+            )
+            for row in identities
+        ]
+
+    def delete_identity(self, identity_id: int) -> list[str]:
+        rows = self._connection.execute(
+            "SELECT source_path FROM face_embeddings WHERE identity_id = ? AND source_path IS NOT NULL",
+            (identity_id,),
+        ).fetchall()
+        with self._connection:
+            cursor = self._connection.execute("DELETE FROM identities WHERE id = ?", (identity_id,))
+        if cursor.rowcount == 0:
+            raise KeyError(identity_id)
+        return [str(row["source_path"]) for row in rows]
 
     def find_matches(
         self,

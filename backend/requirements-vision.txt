@@ -1,8 +1,11 @@
 # Face detection and image processing
-numpy==1.26.4
+numpy==1.26.4; python_version < "3.14"
+numpy==2.3.5; python_version >= "3.14"
 opencv-contrib-python==4.11.0.86
-mediapipe==0.10.21
+mediapipe==0.10.21; python_version < "3.14"
+mediapipe==0.10.32; python_version >= "3.14"
 
 # ArcFace model loading and CPU inference
 insightface==0.7.3
-onnxruntime==1.22.1
+onnxruntime==1.22.1; python_version < "3.14"
+onnxruntime==1.24.4; python_version >= "3.14"

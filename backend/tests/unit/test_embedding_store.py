@@ -52,5 +52,19 @@ class EmbeddingStoreTests(unittest.TestCase):
             self.store.add_embedding(identity_id, np.zeros(512, dtype=np.float32))
 
 
+    def test_lists_identity_metadata_and_deletes_embeddings(self) -> None:
+        identity_id = self.store.upsert_identity("ada", "Ada Lovelace")
+        self.store.add_embedding(
+            identity_id, [1.0, 0.0], source_path="ada/face.png",
+            detection_score=.97, metadata={"original_name": "portrait.png"},
+        )
+        identities = self.store.list_identities()
+        self.assertEqual(len(identities), 1)
+        self.assertEqual(identities[0].display_name, "Ada Lovelace")
+        self.assertEqual(identities[0].embeddings[0].metadata["original_name"], "portrait.png")
+        self.assertEqual(self.store.delete_identity(identity_id), ["ada/face.png"])
+        self.assertEqual(self.store.list_identities(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,10 +9,9 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import cv2
-import mediapipe as mp
 from verifeye.cameras.runtime import FramePublisher, PyAvFrameSource
 from verifeye.recognition import IdentityMatcher, RecognitionEngine, annotate
-from verifeye.vision import process_frame
+from verifeye.vision import create_face_detector, process_frame
 
 
 def main():
@@ -23,7 +22,7 @@ def main():
     if not args.url: parser.error("Provide --url or VERIFEYE_TEST_RTSP_URL.")
     engine=RecognitionEngine(Path(args.model_path)); matcher=IdentityMatcher(args.database,.40); source=None; detector=None; publisher=FramePublisher(); frames=faces=0
     try:
-        source=PyAvFrameSource(args.url,8); detector=mp.solutions.face_detection.FaceDetection(model_selection=0,min_detection_confidence=.5); deadline=time.monotonic()+args.seconds
+        source=PyAvFrameSource(args.url,8); detector=create_face_detector(.5); deadline=time.monotonic()+args.seconds
         for frame in source.frames():
             detected=process_frame(frame,detector,engine,{"detector":{"min_conf":.5,"pad_ratio":.15}}); labeled=[(face,matcher.match(face.embedding)) for face in detected]
             ok,jpeg=cv2.imencode(".jpg",annotate(frame,labeled));

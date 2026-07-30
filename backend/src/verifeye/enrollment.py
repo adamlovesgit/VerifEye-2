@@ -3,11 +3,10 @@
 from pathlib import Path
 from uuid import uuid4
 import cv2
-import mediapipe as mp
 import numpy as np
 
 from .storage import EmbeddingStore
-from .vision import process_frame
+from .vision import create_face_detector, process_frame
 
 
 class EnrollmentError(Exception): pass
@@ -18,7 +17,7 @@ class EnrollmentService:
     def enroll(self, user, contents: bytes, suffix: str, original_name: str | None):
         frame = cv2.imdecode(np.frombuffer(contents, dtype=np.uint8), cv2.IMREAD_COLOR)
         if frame is None: raise EnrollmentError("The uploaded file is not a valid image.")
-        detector = mp.solutions.face_detection.FaceDetection(model_selection=0, min_detection_confidence=.5)
+        detector = create_face_detector(.5)
         try: faces = process_frame(frame, detector, self.engine, {"detector": {"min_conf": .5, "pad_ratio": .15}})
         finally: detector.close()
         if not faces: raise EnrollmentError("No face was found. Try a clear, front-facing photo.")

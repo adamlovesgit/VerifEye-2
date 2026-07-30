@@ -12,7 +12,7 @@
 <body>
   <header class="topbar">
     <a class="brand" href="/" aria-label="VerifEye home"><span class="mark" aria-hidden="true"></span>VerifEye</a>
-    <div class="privacy"><span></span> Local & private</div>
+    <div id="app-nav" class="app-nav hidden"><button class="nav-link active" data-page="dashboard">Dashboard</button><button class="nav-link" data-page="identities">Identities</button><button id="logout" class="ghost">Sign out</button></div><div id="privacy-badge" class="privacy"><span></span> Local & private</div>
   </header>
 
   <main>
@@ -49,41 +49,23 @@
       </div>
     </section>
 
-    <section id="enroll-view" class="dashboard hidden">
-      <div class="dashboard-head">
-        <div><p class="eyebrow">Identity enrollment</p><h1>Welcome, <span id="user-name"></span>.</h1><p>Add a clear photo so VerifEye can recognize you.</p></div>
-        <button id="logout" class="ghost">Sign out</button>
-      </div>
-      <div class="enroll-grid">
-        <form id="enroll-form" class="upload-card">
-          <input id="photo" type="file" accept="image/jpeg,image/png,image/webp" hidden>
-          <button id="drop-zone" class="drop-zone" type="button">
-            <span class="upload-icon" aria-hidden="true">↑</span>
-            <strong>Choose a photo</strong>
-            <span>or drag and drop it here</span>
-            <small>JPEG, PNG or WebP · up to 10 MB</small>
-          </button>
-          <div id="preview-wrap" class="preview-wrap hidden"><img id="preview" alt="Selected enrollment photo"><button id="change-photo" type="button" class="change">Choose another</button></div>
-          <p id="enroll-error" class="error" role="alert"></p>
-          <button id="enroll-button" class="primary" type="submit" disabled><span>Enroll this face</span><span>→</span></button>
-        </form>
-        <aside class="tips">
-          <p class="kicker">For the best result</p>
-          <h2>A few quick tips.</h2>
-          <ul><li>Face the camera directly</li><li>Use even, natural lighting</li><li>Remove sunglasses or face coverings</li><li>Make sure only you are in the photo</li></ul>
-          <div id="success" class="success hidden"><span>✓</span><div><strong>You're enrolled.</strong><p>VerifEye saved your face securely to the local database.</p></div></div>
-        </aside>
-      </div>
-      <section class="camera-section">
-        <div class="section-heading"><div><p class="eyebrow">Live recognition</p><h2>LAN cameras</h2><p>RTSP works the same over wired Ethernet or Wi-Fi.</p></div><button id="discover-onvif" class="ghost">Discover ONVIF</button></div>
-        <form id="camera-form" class="camera-form">
-          <label>Camera name<input id="camera-name" maxlength="100" placeholder="Front door" required></label>
-          <label>RTSP URL<input id="camera-url" type="url" placeholder="rtsp://user:password@192.168.1.20/stream" required></label>
-          <button class="primary" type="submit"><span>Add and start camera</span><span>+</span></button>
-          <p id="camera-error" class="error" role="alert"></p>
-        </form>
-        <div id="onvif-panel" class="onvif-panel hidden"><p id="onvif-status">Searching the LAN…</p><div id="onvif-devices"></div></div>
-        <div id="camera-list" class="camera-list"><p class="empty">No cameras configured.</p></div>
+    <section id="app-view" class="dashboard hidden">
+      <section id="dashboard-page" class="app-page">
+        <div class="dashboard-head"><div><p class="eyebrow">Live recognition</p><h1>Camera dashboard.</h1><p>Monitor and control recognition streams on your local network.</p></div></div>
+        <section class="camera-section camera-primary">
+          <div class="section-heading"><div><p class="eyebrow">Camera management</p><h2>LAN cameras</h2><p>RTSP works over wired Ethernet or Wi-Fi.</p></div><button id="discover-onvif" class="ghost">Discover ONVIF</button></div>
+          <form id="camera-form" class="camera-form"><label>Camera name<input id="camera-name" maxlength="100" placeholder="Front door" required></label><label>RTSP URL<input id="camera-url" type="url" placeholder="rtsp://user:password@192.168.1.20/stream" required></label><button class="primary" type="submit"><span>Add and start camera</span><span>+</span></button><p id="camera-error" class="error" role="alert"></p></form>
+          <div id="onvif-panel" class="onvif-panel hidden"><p id="onvif-status">Searching the LAN…</p><div id="onvif-devices"></div></div><div id="camera-list" class="camera-list"><p class="empty">No cameras configured.</p></div>
+        </section>
+      </section>
+      <section id="identities-page" class="app-page hidden">
+        <div class="dashboard-head"><div><p class="eyebrow">Local database</p><h1>Identities.</h1><p>Review enrolled people, biometric records, and associated metadata.</p></div><button id="open-enrollment" class="primary compact">Enroll a face <span>+</span></button></div>
+        <div id="enrollment-panel" class="enroll-grid hidden">
+          <form id="enroll-form" class="upload-card"><input id="photo" type="file" accept="image/jpeg,image/png,image/webp" hidden><button id="drop-zone" class="drop-zone" type="button"><span class="upload-icon" aria-hidden="true">↑</span><strong>Choose a photo</strong><span>or drag and drop it here</span><small>JPEG, PNG or WebP · up to 10 MB</small></button><div id="preview-wrap" class="preview-wrap hidden"><img id="preview" alt="Selected enrollment photo"><button id="change-photo" type="button" class="change">Choose another</button></div><p id="enroll-error" class="error" role="alert"></p><button id="enroll-button" class="primary" type="submit" disabled><span>Enroll this face</span><span>→</span></button></form>
+          <aside class="tips"><p class="kicker">For the best result</p><h2>A few quick tips.</h2><ul><li>Face the camera directly</li><li>Use even, natural lighting</li><li>Remove sunglasses or face coverings</li><li>Make sure only you are in the photo</li></ul><div id="success" class="success hidden"><span>✓</span><div><strong>Face enrolled.</strong><p>The identity database has been updated.</p></div></div></aside>
+        </div>
+        <div class="identity-toolbar"><div><strong id="identity-count">0 identities</strong><span>Stored only on this server</span></div><button id="refresh-identities" class="ghost">Refresh</button></div>
+        <p id="identity-error" class="error" role="alert"></p><div id="identity-list" class="identity-list"><p class="empty">No identities enrolled.</p></div>
       </section>
     </section>
   </main>

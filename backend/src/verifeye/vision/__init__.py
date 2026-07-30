@@ -1,5 +1,7 @@
 """Face-recognition data types and pure image-processing operations."""
 
+from .detector import create_face_detector
+
 from .processing import (
     align_face,
     annotate_frame,
@@ -16,6 +18,7 @@ __all__ = [
     "DetectedFace",
     "align_face",
     "annotate_frame",
+    "create_face_detector",
     "detect_faces",
     "embed_face",
     "expand_box",

@@ -149,6 +149,33 @@ async def enroll(image: UploadFile = File(), user=Depends(current_user)):
     except EnrollmentError as exc: raise HTTPException(422, str(exc)) from exc
 
 
+def embedding_json(record):
+    return {"id": record.id, "modelName": record.model_name, "dimensions": int(record.embedding.size),
+            "sourcePath": record.source_path, "detectionScore": record.detection_score,
+            "metadata": record.metadata, "createdAt": record.created_at}
+
+
+@app.get("/api/identities")
+def list_identities(_user=Depends(current_user)):
+    with EmbeddingStore(app.state.settings.database) as store:
+        return [{"id": identity.id, "externalId": identity.external_id, "displayName": identity.display_name,
+                 "createdAt": identity.created_at, "updatedAt": identity.updated_at,
+                 "embeddings": [embedding_json(item) for item in identity.embeddings]}
+                for identity in store.list_identities()]
+
+
+@app.delete("/api/identities/{identity_id}", status_code=204)
+def delete_identity(identity_id: int, _user=Depends(current_user)):
+    with EmbeddingStore(app.state.settings.database) as store:
+        try: source_paths = store.delete_identity(identity_id)
+        except KeyError as exc: raise HTTPException(404, "Identity not found.") from exc
+    upload_dir = Path(app.state.settings.upload_dir).resolve()
+    for source_path in source_paths:
+        target = (upload_dir / source_path).resolve()
+        if target.is_relative_to(upload_dir): target.unlink(missing_ok=True)
+    return Response(status_code=204)
+
+
 @app.get("/api/cameras")
 def list_cameras(_user=Depends(current_user)): return [camera_json(*item) for item in app.state.cameras.list()]
 

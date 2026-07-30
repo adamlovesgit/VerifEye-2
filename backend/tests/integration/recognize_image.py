@@ -14,7 +14,6 @@ import sys
 from pathlib import Path
 
 import cv2
-import mediapipe as mp
 import numpy as np
 
 
@@ -22,7 +21,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 SRC_DIR = BACKEND_DIR / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-from verifeye.vision import annotate_frame, process_frame  # noqa: E402
+from verifeye.vision import annotate_frame, create_face_detector, process_frame  # noqa: E402
 
 
 CONFIG = {
@@ -125,10 +124,7 @@ def run(input_path: Path, output_dir: Path, model_path: Path) -> tuple[Path, Pat
             "Pass its location with --model-path."
         )
 
-    detector = mp.solutions.face_detection.FaceDetection(
-        model_selection=CONFIG["detector"]["model_selection"],
-        min_detection_confidence=CONFIG["detector"]["min_conf"],
-    )
+    detector = create_face_detector(CONFIG["detector"]["min_conf"])
     try:
         recognizer = get_model(os.fspath(model_path))
         if recognizer is None:
