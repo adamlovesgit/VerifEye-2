@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import logging
 import threading
 import time
 
@@ -16,6 +18,8 @@ from .models import (
 )
 from ..recognition import annotate
 from ..vision import create_face_detector, process_frame
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -116,6 +120,9 @@ class CameraWorker:
         self._session_state, self._stream_mode = RecognitionSessionState.IDLE, RecognitionStreamMode.NONE
         self._session_started_at = self._deadline = self._maximum_deadline = None
         self._recognition_error = None
+        self._durable_session_id = None
+        self._lifecycle_callback = self._result_callback = None
+        self._session_face_count = 0
         self._status = CameraStatus(camera.id, camera.enabled, False, ConnectionState.STOPPED)
 
     @property
@@ -185,12 +192,14 @@ class CameraWorker:
         self.publisher.close()
         self._set(running=False, connection_state=ConnectionState.STOPPED, next_retry_at=None)
 
-    def trigger_recognition(self):
+    def trigger_recognition(self, session_id=None, lifecycle_callback=None, result_callback=None):
         now = self.clock()
         with self._lock:
             if self._stop.is_set() or not self._status.running or self._session_state == RecognitionSessionState.STOPPING:
                 raise RuntimeError(f"Camera {self.camera.id} is not running.")
             if self._session_state in (RecognitionSessionState.STARTING, RecognitionSessionState.ACTIVE):
+                if session_id is not None and self._durable_session_id not in (None, session_id):
+                    raise RuntimeError("The active runtime session has a different durable session.")
                 self._deadline = min(now + self.window_seconds, self._maximum_deadline)
                 return self._session_status(True)
             self._session_generation += 1
@@ -200,6 +209,9 @@ class CameraWorker:
             self._deadline = min(now + self.window_seconds, now + self.max_session_seconds)
             self._maximum_deadline = now + self.max_session_seconds
             self._recognition_error = None
+            self._durable_session_id = session_id
+            self._lifecycle_callback, self._result_callback = lifecycle_callback, result_callback
+            self._session_face_count = 0
             snapshot = self.pre_roll.snapshot(now)
             lightweight_boundary = self._sequence
             self._session_thread = threading.Thread(
@@ -233,14 +245,38 @@ class CameraWorker:
         frame = record.frame.copy()
         faces = self.frame_processor(frame, detector, self.engine, {"detector": {"min_conf": .5, "pad_ratio": .15}})
         labeled = [(face, self.matcher.match(face.embedding)) for face in faces]
+        self._session_face_count += len(labeled)
+        if labeled and self._result_callback and self._durable_session_id is not None:
+            captured = datetime.fromtimestamp(record.captured_at, timezone.utc).isoformat()
+            results = []
+            for face, label in labeled:
+                crop_ok, crop = cv2.imencode(".jpg", face.aligned_rgb[..., ::-1],
+                                             [cv2.IMWRITE_JPEG_QUALITY, 90])
+                results.append({
+                    "capture_timestamp": captured,
+                    "frame_sequence": record.sequence,
+                    "source_role": record.source_role,
+                    "outcome": "recognized" if label.identity_id is not None else "unrecognized_face",
+                    "identity_id": label.identity_id,
+                    "similarity": label.similarity,
+                    "detection_confidence": float(face.score),
+                    "displayed_label": label.display_name,
+                    "image_bytes": crop.tobytes() if crop_ok else None,
+                })
+            self._result_callback(self._durable_session_id, results)
         ok, jpeg = cv2.imencode(".jpg", annotate(frame, labeled), [cv2.IMWRITE_JPEG_QUALITY, 82])
         if ok: self.publisher.publish(jpeg.tobytes())
 
     def _recognition_loop(self, generation, snapshot, lightweight_boundary):
         detector = dedicated_decoder = None
+        with self._lock:
+            durable_session_id = self._durable_session_id
+            lifecycle_callback = self._lifecycle_callback
+            result_callback = self._result_callback
         dedicated_done, connector_ready = threading.Event(), threading.Event()
         connector_result = {"lock": threading.Lock(), "accepting": True}
         connection_deadline = self._session_started_at + self.timeout
+        failed = None
         try:
             detector = self.detector_factory(.5)
             if self.camera.recognition_url:
@@ -273,10 +309,17 @@ class CameraWorker:
                                 sequence += 1
                                 dedicated_latest.put(FrameRecord(self.camera.id, sequence, 1, self.clock(), "dedicated", _owned_frame(frame)))
                         except Exception: pass
-                        finally: dedicated_done.set()
+                        finally:
+                            try: source.close()
+                            except Exception: pass
+                            dedicated_done.set()
                     dedicated_decoder = threading.Thread(target=decode, daemon=True); dedicated_decoder.start()
             with self._lock:
                 if generation == self._session_generation: self._session_state = RecognitionSessionState.ACTIVE
+            if lifecycle_callback and durable_session_id is not None:
+                lifecycle_callback(
+                    durable_session_id, "active", self._stream_mode.value, None
+                )
             last_dedicated = 0
             while self._valid_session(generation):
                 with self._lock: deadline, mode = self._deadline, self._stream_mode
@@ -296,6 +339,8 @@ class CameraWorker:
                     if sequence == last_lightweight or record is None: continue
                     last_lightweight = sequence
                 self._recognize(record, detector)
+        except Exception as exc:
+            failed = str(exc)
         finally:
             with connector_result["lock"]:
                 connector_result["accepting"] = False
@@ -305,31 +350,48 @@ class CameraWorker:
                 except Exception: pass
             with self._lock:
                 if generation == self._session_generation: self._session_state = RecognitionSessionState.STOPPING
-                source, self._dedicated_source = self._dedicated_source, None
-            if source:
-                try: source.close()
-                except Exception: pass
+                self._dedicated_source = None
             if dedicated_decoder: dedicated_decoder.join(self.timeout)
             if detector:
                 try: detector.close()
                 except Exception: pass
             with self._lock:
+                session_face_count = self._session_face_count
                 if generation == self._session_generation:
                     self._session_state, self._stream_mode = RecognitionSessionState.IDLE, RecognitionStreamMode.NONE
                     self._session_started_at = self._deadline = self._maximum_deadline = None
+            if durable_session_id is not None and lifecycle_callback:
+                if failed:
+                    if result_callback:
+                        result_callback(durable_session_id, [{
+                            "capture_timestamp": datetime.now(timezone.utc).isoformat(),
+                            "outcome": "processing_error", "error_code": "processing_error",
+                            "error_message": failed,
+                        }])
+                    lifecycle_callback(durable_session_id, "failed", None, failed)
+                else:
+                    if session_face_count == 0 and result_callback:
+                        result_callback(durable_session_id, [{
+                            "capture_timestamp": datetime.now(timezone.utc).isoformat(),
+                            "outcome": "no_face",
+                        }])
+                    lifecycle_callback(durable_session_id, "completed", None, None)
 
-    def stop(self, timeout):
+    def request_stop(self):
         self._stop.set()
+        self.publisher.close()
         with self._lock:
             self._session_generation += 1
-            sources = (self._source, self._dedicated_source)
-        for source in sources:
-            if source:
-                try: source.close()
-                except Exception: pass
+
+    def finish_stop(self, timeout):
+        deadline = time.monotonic() + timeout
         for thread in (self._session_thread, self._capture_thread):
-            if thread: thread.join(timeout)
+            if thread: thread.join(max(0.0, deadline - time.monotonic()))
             if thread and thread.is_alive(): raise TimeoutError(f"Camera {self.camera.id} did not stop within the cleanup deadline.")
+
+    def stop(self, timeout):
+        self.request_stop()
+        self.finish_stop(timeout)
 
 
 class CameraManager:
@@ -340,7 +402,7 @@ class CameraManager:
         self.fps, self.timeout, self.cleanup_timeout, self.max_active, self.worker_factory = fps, timeout, cleanup_timeout, max_active, worker_factory
         self.pre_roll_seconds, self.recognition_window_seconds = pre_roll_seconds, recognition_window_seconds
         self.max_session_seconds, self.pre_roll_max_frames = max_session_seconds, pre_roll_max_frames
-        self._workers, self._lock, self._shutting_down = {}, threading.RLock(), False
+        self._workers, self._cleanup_threads, self._lock, self._shutting_down = {}, set(), threading.RLock(), False
     def start(self, camera_id):
         with self._lock:
             if self._shutting_down: raise RuntimeError("Camera manager is shutting down.")
@@ -354,18 +416,34 @@ class CameraManager:
             except TypeError:
                 worker = self.worker_factory(camera, self.engine, self.matcher, self.fps, self.timeout)
             self._workers[camera_id] = worker; worker.start(); return worker.status
-    def trigger_recognition(self, camera_id):
+    def trigger_recognition(self, camera_id, **kwargs):
         self.repository.get(camera_id)
         with self._lock: worker = self._workers.get(camera_id)
         if worker is None: raise RuntimeError(f"Camera {camera_id} is not running.")
-        return worker.trigger_recognition()
+        return worker.trigger_recognition(**kwargs)
     def stop(self, camera_id):
-        with self._lock: worker = self._workers.get(camera_id)
+        with self._lock: worker = self._workers.pop(camera_id, None)
         if worker:
-            worker.stop(self.cleanup_timeout)
-            with self._lock: self._workers.pop(camera_id, None)
+            request_stop = getattr(worker, "request_stop", None)
+            if request_stop:
+                request_stop()
+                cleanup = threading.Thread(
+                    target=self._finish_stop, args=(worker,), name=f"camera-{camera_id}-cleanup", daemon=True
+                )
+                with self._lock: self._cleanup_threads.add(cleanup)
+                cleanup.start()
+            else:
+                worker.stop(self.cleanup_timeout)
         camera = self.repository.get(camera_id)
         return CameraStatus(camera.id, camera.enabled, False, ConnectionState.STOPPED)
+    def _finish_stop(self, worker):
+        current = threading.current_thread()
+        try:
+            worker.finish_stop(self.cleanup_timeout)
+        except Exception:
+            logger.exception("Camera %s cleanup did not complete cleanly.", worker.camera.id)
+        finally:
+            with self._lock: self._cleanup_threads.discard(current)
     def restart(self, camera_id): self.stop(camera_id); return self.start(camera_id)
     def delete(self, camera_id): self.stop(camera_id); self.repository.delete(camera_id)
     def status(self, camera_id):
@@ -379,7 +457,15 @@ class CameraManager:
         for camera in self.repository.list():
             if camera.enabled: self.start(camera.id)
     def shutdown(self):
-        with self._lock: self._shutting_down, ids = True, list(self._workers)
-        for camera_id in ids:
-            try: self.stop(camera_id)
-            except Exception: pass
+        with self._lock:
+            self._shutting_down, workers = True, list(self._workers.values())
+            self._workers.clear()
+        for worker in workers:
+            try: worker.request_stop()
+            except Exception: logger.exception("Could not signal camera %s to stop.", worker.camera.id)
+        deadline = time.monotonic() + self.cleanup_timeout
+        for worker in workers:
+            try: worker.finish_stop(max(0.0, deadline - time.monotonic()))
+            except Exception: logger.exception("Camera %s did not stop during shutdown.", worker.camera.id)
+        with self._lock: cleanup_threads = list(self._cleanup_threads)
+        for thread in cleanup_threads: thread.join(max(0.0, deadline - time.monotonic()))

@@ -13,14 +13,15 @@
       document.documentElement.style.colorScheme = theme;
     })();
   </script>
-  <link rel="stylesheet" href="/assets/styles.css">
-  <link rel="stylesheet" href="/assets/cameras.css">
-  <script src="/assets/app.js" defer></script>
+  <link rel="stylesheet" href="/assets/styles.css?v=phase2-events-2">
+  <link rel="stylesheet" href="/assets/cameras.css?v=phase2-events-2">
+  <link rel="stylesheet" href="/assets/events.css?v=phase2-events-2">
+  <script src="/assets/app.js?v=phase2-events-2" defer></script>
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="/" aria-label="VerifEye home"><span class="mark" aria-hidden="true"></span>VerifEye</a>
-    <div class="topbar-actions"><div id="app-nav" class="app-nav hidden"><button class="nav-link active" data-page="dashboard">Dashboard</button><button class="nav-link" data-page="identities">Identities</button><button id="logout" class="ghost">Sign out</button></div><div id="privacy-badge" class="privacy"><span></span> Local & private</div><button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false"><span class="theme-icon" aria-hidden="true">☾</span><span class="theme-label">Dark</span></button></div>
+    <div class="topbar-actions"><div id="app-nav" class="app-nav hidden"><button class="nav-link active" data-page="dashboard">Dashboard</button><button class="nav-link" data-page="events">Events</button><button class="nav-link" data-page="identities">Identities</button><button id="logout" class="ghost">Sign out</button></div><div id="privacy-badge" class="privacy"><span></span> Local & private</div><button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false"><span class="theme-icon" aria-hidden="true">☾</span><span class="theme-label">Dark</span></button></div>
   </header>
 
   <main>
@@ -59,12 +60,18 @@
 
     <section id="app-view" class="dashboard hidden">
       <section id="dashboard-page" class="app-page">
-        <div class="dashboard-head"><div><p class="eyebrow">Live recognition</p><h1>Camera dashboard.</h1><p>Monitor and control recognition streams on your local network.</p></div></div>
+        <div class="dashboard-head"><div><p class="eyebrow">Live recognition</p><h1>Camera dashboard.</h1><p>Monitor and control recognition streams on your local network.</p></div><button id="open-events" class="ghost">View events</button></div>
         <section class="camera-section camera-primary">
           <div class="section-heading"><div><p class="eyebrow">Camera management</p><h2>LAN cameras</h2><p>RTSP works over wired Ethernet or Wi-Fi.</p></div><button id="discover-onvif" class="ghost">Discover ONVIF</button></div>
           <form id="camera-form" class="camera-form"><label>Camera name<input id="camera-name" maxlength="100" placeholder="Front door" required></label><label>RTSP URL<input id="camera-url" type="url" placeholder="rtsp://user:password@192.168.1.20/stream" required></label><button class="primary" type="submit"><span>Add and start camera</span><span>+</span></button><p id="camera-error" class="error" role="alert"></p></form>
           <div id="onvif-panel" class="onvif-panel hidden"><p id="onvif-status">Searching the LAN…</p><div id="onvif-devices"></div></div><div id="camera-list" class="camera-list"><p class="empty">No cameras configured.</p></div>
         </section>
+      </section>
+      <section id="events-page" class="app-page hidden">
+        <div class="dashboard-head"><div><p class="eyebrow">Recognition history</p><h1>Events.</h1><p>Review durable camera triggers, processing state, recognition outcomes, and failures.</p></div><button id="refresh-events" class="ghost">Refresh</button></div>
+        <div class="event-toolbar"><div><strong id="event-count">0 events</strong><span>Newest events appear first</span></div><label>State<select id="event-state-filter"><option value="">All states</option><option value="accepted">Accepted</option><option value="dispatched">Dispatched</option><option value="completed">Completed</option><option value="failed">Failed</option></select></label></div>
+        <p id="event-error" class="error" role="alert"></p>
+        <div id="event-list" class="event-list"><p class="empty">No camera events recorded.</p></div>
       </section>
       <section id="identities-page" class="app-page hidden">
         <div class="dashboard-head"><div><p class="eyebrow">Local database</p><h1>Identities.</h1><p>Review enrolled people, biometric records, and associated metadata.</p></div><button id="open-enrollment" class="primary compact">Enroll a face <span>+</span></button></div>

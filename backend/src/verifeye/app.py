@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import timedelta
+import json
 from pathlib import Path
+import sqlite3
 import threading
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -17,6 +20,7 @@ from .cameras.models import ActiveCameraLimitReached, CameraError, CameraNotFoun
 from .cameras.service import OnvifGateway
 from .config import Settings
 from .enrollment import EnrollmentError, EnrollmentService
+from .events import EventDispatcher, EventRepository, InvalidEvent, ScreenshotStorage, parse_utc, utcnow
 from .recognition import IdentityMatcher, RecognitionEngine
 from .storage import EmbeddingStore
 
@@ -97,19 +101,41 @@ async def lifespan(application: FastAPI):
                             recognition_window_seconds=settings.recognition_window_seconds,
                             max_session_seconds=settings.max_recognition_session_seconds,
                             pre_roll_max_frames=settings.pre_roll_max_frames)
+    event_repository = EventRepository(settings.database, settings.sqlite_busy_timeout_ms)
+    screenshots = ScreenshotStorage(settings.event_screenshot_dir)
+    event_repository.reconcile()
+    screenshots.cleanup_orphans(event_repository.referenced_paths())
+    dispatcher = EventDispatcher(
+        event_repository, manager, settings.pre_roll_seconds, settings.recognition_window_seconds,
+        settings.max_recognition_session_seconds, settings.event_dispatch_lease_seconds,
+        settings.event_dispatch_max_attempts, screenshot_storage=screenshots,
+    )
     application.state.settings, application.state.engine = settings, engine
     application.state.manager = manager; application.state.cameras = CameraService(repository, manager)
     application.state.enrollment = EnrollmentService(settings.database, settings.upload_dir, engine)
     application.state.onvif = OnvifGateway()
+    application.state.events, application.state.screenshots = event_repository, screenshots
+    application.state.dispatcher = dispatcher
     try:
         manager.start_enabled()
+        dispatcher.start()
         yield
     finally:
-        manager.shutdown(); engine.close()
+        dispatcher.stop(); manager.shutdown(); engine.close()
 
 
 app = FastAPI(title="VerifEye", version="0.2.0", lifespan=lifespan)
 app.mount("/assets", StaticFiles(directory=FRONTEND_DIR), name="assets")
+
+
+@app.middleware("http")
+async def disable_frontend_cache(request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 
 @app.exception_handler(CameraError)
@@ -214,6 +240,141 @@ def start_camera(camera_id: int, _user=Depends(current_user)):
 @app.post("/api/cameras/{camera_id}/stop")
 def stop_camera(camera_id: int, _user=Depends(current_user)):
     camera = app.state.cameras.repository.get(camera_id); return camera_json(camera, app.state.cameras.stop(camera_id))
+
+
+def event_summary(event):
+    return {"id": event.id, "state": event.state, "acceptedAt": event.accepted_at,
+            "inspectionPath": f"/api/camera-events/{event.id}"}
+
+
+def valid_image_signature(contents: bytes, media_type: str) -> bool:
+    return ((media_type == "image/jpeg" and contents.startswith(b"\xff\xd8\xff"))
+            or (media_type == "image/png" and contents.startswith(b"\x89PNG\r\n\x1a\n"))
+            or (media_type == "image/webp" and len(contents) >= 12
+                and contents[:4] == b"RIFF" and contents[8:12] == b"WEBP"))
+
+
+@app.post("/api/cameras/{camera_id}/event-token", status_code=201)
+def issue_camera_event_token(camera_id: int, _user=Depends(current_user)):
+    app.state.cameras.repository.get(camera_id)
+    token_id, token = app.state.events.issue_token(camera_id)
+    return {"id": token_id, "cameraId": camera_id, "token": token}
+
+
+@app.post("/api/cameras/{camera_id}/event-token/rotate", status_code=201)
+def rotate_camera_event_token(camera_id: int, _user=Depends(current_user)):
+    app.state.cameras.repository.get(camera_id)
+    app.state.events.revoke_tokens(camera_id)
+    token_id, token = app.state.events.issue_token(camera_id)
+    return {"id": token_id, "cameraId": camera_id, "token": token}
+
+
+@app.delete("/api/cameras/{camera_id}/event-token", status_code=204)
+def revoke_camera_event_token(camera_id: int, _user=Depends(current_user)):
+    app.state.cameras.repository.get(camera_id)
+    app.state.events.revoke_tokens(camera_id)
+    return Response(status_code=204)
+
+
+@app.delete("/api/cameras/{camera_id}/event-tokens/{token_id}", status_code=204)
+def revoke_specific_camera_event_token(camera_id: int, token_id: int, _user=Depends(current_user)):
+    app.state.cameras.repository.get(camera_id)
+    if not app.state.events.revoke_token(camera_id, token_id):
+        raise HTTPException(404, "Camera event token not found.")
+    return Response(status_code=204)
+
+
+@app.post("/api/cameras/{camera_id}/events")
+async def ingest_camera_event(
+    camera_id: int,
+    source_event_id: str = Form(alias="sourceEventId", min_length=1, max_length=200),
+    event_type: str = Form(alias="eventType", min_length=1, max_length=100),
+    occurred_at: str = Form(alias="occurredAt"),
+    metadata: str = Form(default="{}"),
+    screenshot: UploadFile | None = File(default=None),
+    event_token: str | None = Header(default=None, alias="X-Camera-Event-Token"),
+):
+    if not event_token or not app.state.events.authenticate_camera_token(camera_id, event_token):
+        raise HTTPException(401, "Invalid or revoked camera event token.")
+    source_event_id = source_event_id.strip()
+    existing = app.state.events.existing_event(camera_id, source_event_id)
+    if existing:
+        return JSONResponse(event_summary(existing), status_code=200)
+    try:
+        occurred = parse_utc(occurred_at)
+        now, settings = utcnow(), app.state.settings
+        if occurred < now - timedelta(seconds=settings.event_max_age_seconds):
+            raise InvalidEvent("Event timestamp is too old.")
+        if occurred > now + timedelta(seconds=settings.event_future_skew_seconds):
+            raise InvalidEvent("Event timestamp is too far in the future.")
+        metadata_value = json.loads(metadata)
+        if not isinstance(metadata_value, dict):
+            raise InvalidEvent("Metadata must be a JSON object.")
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    finalized = None
+    try:
+        screenshot_record = None
+        if screenshot is not None:
+            contents = await screenshot.read(MAX_UPLOAD_BYTES + 1)
+            if len(contents) > MAX_UPLOAD_BYTES:
+                raise InvalidEvent("Screenshot must be 10 MB or smaller.")
+            media_type = screenshot.content_type or ""
+            if not valid_image_signature(contents, media_type):
+                raise InvalidEvent("Screenshot content does not match a supported image type.")
+            finalized, screenshot_record = app.state.screenshots.stage(contents, media_type)
+        event = app.state.events.accept_event(
+            camera_id, source_event_id, event_type.strip(), occurred, metadata_value, screenshot_record
+        )
+        if not event.created and finalized:
+            finalized.unlink(missing_ok=True)
+        return JSONResponse(event_summary(event), status_code=202 if event.created else 200)
+    except (InvalidEvent, sqlite3.IntegrityError) as exc:
+        if finalized:
+            finalized.unlink(missing_ok=True)
+        raise HTTPException(422, str(exc)) from exc
+    except Exception:
+        if finalized:
+            finalized.unlink(missing_ok=True)
+        raise
+
+
+@app.get("/api/camera-events")
+def list_camera_events(
+    camera_id: int | None = None, state: str | None = None, outcome: str | None = None,
+    accepted_after: str | None = None, accepted_before: str | None = None,
+    limit: int = 50, offset: int = 0, _user=Depends(current_user),
+):
+    if not 1 <= limit <= 200 or offset < 0:
+        raise HTTPException(422, "Invalid pagination.")
+    try:
+        return app.state.events.list_events(
+            limit=limit, offset=offset, camera_id=camera_id, state=state, outcome=outcome,
+            accepted_after=accepted_after, accepted_before=accepted_before,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/api/camera-events/{event_id}")
+def get_camera_event(event_id: int, _user=Depends(current_user)):
+    event = app.state.events.get_event(event_id)
+    if event is None:
+        raise HTTPException(404, "Camera event not found.")
+    for shot in event["screenshots"]:
+        shot["contentPath"] = f"/api/screenshots/{shot['id']}"
+    return event
+
+
+@app.get("/api/screenshots/{screenshot_id}")
+def get_screenshot(screenshot_id: int, _user=Depends(current_user)):
+    record = app.state.events.screenshot(screenshot_id)
+    if record is None:
+        raise HTTPException(404, "Screenshot not found.")
+    path = app.state.screenshots.resolve(record["relative_path"])
+    if not path.is_file():
+        raise HTTPException(404, "Screenshot file is unavailable.")
+    return FileResponse(path, media_type=record["media_type"])
 
 
 @app.get("/api/cameras/{camera_id}/stream")

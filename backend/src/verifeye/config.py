@@ -23,6 +23,12 @@ class Settings:
     recognition_window_seconds: float = 10.0
     max_recognition_session_seconds: float = 60.0
     pre_roll_max_frames: int = 150
+    event_screenshot_dir: Path | None = None
+    event_max_age_seconds: float = 86400.0
+    event_future_skew_seconds: float = 300.0
+    event_dispatch_lease_seconds: float = 30.0
+    event_dispatch_max_attempts: int = 5
+    sqlite_busy_timeout_ms: int = 5000
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -42,6 +48,12 @@ class Settings:
             recognition_window_seconds=float(os.getenv("VERIFEYE_RECOGNITION_WINDOW_SECONDS", "10")),
             max_recognition_session_seconds=float(os.getenv("VERIFEYE_MAX_RECOGNITION_SESSION_SECONDS", "60")),
             pre_roll_max_frames=int(os.getenv("VERIFEYE_PRE_ROLL_MAX_FRAMES", "150")),
+            event_screenshot_dir=Path(os.getenv("VERIFEYE_EVENT_SCREENSHOT_DIR", backend / "data" / "events")),
+            event_max_age_seconds=float(os.getenv("VERIFEYE_EVENT_MAX_AGE_SECONDS", "86400")),
+            event_future_skew_seconds=float(os.getenv("VERIFEYE_EVENT_FUTURE_SKEW_SECONDS", "300")),
+            event_dispatch_lease_seconds=float(os.getenv("VERIFEYE_EVENT_DISPATCH_LEASE_SECONDS", "30")),
+            event_dispatch_max_attempts=int(os.getenv("VERIFEYE_EVENT_DISPATCH_MAX_ATTEMPTS", "5")),
+            sqlite_busy_timeout_ms=int(os.getenv("VERIFEYE_SQLITE_BUSY_TIMEOUT_MS", "5000")),
         )
 
     def validate(self) -> None:
@@ -53,3 +65,9 @@ class Settings:
             raise ValueError("Recognition window must fit the session maximum and the pre-roll cap must be positive.")
         if not -1 <= self.similarity_threshold <= 1:
             raise ValueError("Similarity threshold must be between -1 and 1.")
+        if self.event_max_age_seconds <= 0 or self.event_future_skew_seconds < 0:
+            raise ValueError("Event timestamp bounds are invalid.")
+        if self.event_dispatch_lease_seconds <= 0 or self.event_dispatch_max_attempts < 1:
+            raise ValueError("Event dispatcher settings are invalid.")
+        if self.sqlite_busy_timeout_ms < 0:
+            raise ValueError("SQLite busy timeout must not be negative.")

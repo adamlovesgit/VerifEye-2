@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -78,12 +79,30 @@ class FakeWorker:
     def start(self): self.started=True
     def stop(self, _): self.stopped=True
 
+class SlowWorker(FakeWorker):
+    cleanup_started = threading.Event()
+    cleanup_release = threading.Event()
+    def request_stop(self): self.stopped=True
+    def finish_stop(self, _):
+        self.cleanup_started.set()
+        self.cleanup_release.wait(1)
+
 class ManagerTests(unittest.TestCase):
     def test_one_worker_and_cleanup_before_delete(self):
         repository=FakeRepository(); manager=CameraManager(repository, object(), object(), worker_factory=FakeWorker)
         manager.start(1); first=manager._workers[1]; manager.start(1)
         self.assertIs(manager._workers[1], first); manager.delete(1)
         self.assertTrue(first.stopped); self.assertTrue(repository.deleted); self.assertFalse(manager.status(1).running)
+
+    def test_stop_returns_without_waiting_for_cleanup(self):
+        SlowWorker.cleanup_started.clear(); SlowWorker.cleanup_release.clear()
+        repository=FakeRepository(); manager=CameraManager(repository, object(), object(), worker_factory=SlowWorker)
+        manager.start(1)
+        started=time.monotonic(); status=manager.stop(1); elapsed=time.monotonic()-started
+        self.assertLess(elapsed, .2); self.assertFalse(status.running)
+        self.assertNotIn(1, manager._workers)
+        self.assertTrue(SlowWorker.cleanup_started.wait(.2))
+        SlowWorker.cleanup_release.set()
 
 
 if __name__ == "__main__": unittest.main()

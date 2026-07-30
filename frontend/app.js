@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { mode: "login", token: localStorage.getItem("verifeye_token"), file: null, streamStops: new Map(), currentUser: null };
+const state = { mode: "login", token: localStorage.getItem("verifeye_token"), file: null, streamStops: new Map(), currentUser: null, cameraLoadController: null, cameraLoadGeneration: 0 };
 
 function setTheme(theme) {
   const dark = theme === "dark";
@@ -80,15 +80,22 @@ $("#auth-form").addEventListener("submit", async (event) => {
 
 
 function showPage(page) {
-  const dashboard = page === "dashboard";
-  $("#dashboard-page").classList.toggle("hidden", !dashboard);
-  $("#identities-page").classList.toggle("hidden", dashboard);
+  $("#dashboard-page").classList.toggle("hidden", page !== "dashboard");
+  $("#events-page").classList.toggle("hidden", page !== "events");
+  $("#identities-page").classList.toggle("hidden", page !== "identities");
   document.querySelectorAll(".nav-link").forEach(button => button.classList.toggle("active", button.dataset.page === page));
-  if (dashboard) loadCameras(); else { stopAllStreams(); loadIdentities(); }
+  if (page === "dashboard") loadCameras();
+  else {
+    stopAllStreams();
+    if (page === "events") loadEvents(); else loadIdentities();
+  }
 }
 document.querySelectorAll(".nav-link").forEach(button => button.addEventListener("click", () => showPage(button.dataset.page)));
 $("#open-enrollment").addEventListener("click", () => $("#enrollment-panel").classList.toggle("hidden"));
 $("#refresh-identities").addEventListener("click", loadIdentities);
+$("#refresh-events").addEventListener("click", loadEvents);
+$("#event-state-filter").addEventListener("change", loadEvents);
+$("#open-events").addEventListener("click", () => showPage("events"));
 
 $("#logout").addEventListener("click", async () => { try { await api("/api/auth/logout", { method: "POST" }); } finally { showAuth(); } });
 const photo = $("#photo"), zone = $("#drop-zone");
@@ -123,12 +130,14 @@ $("#enroll-form").addEventListener("submit", async (event) => {
 
 function statusText(camera) { return {connecting:"Loading",live:"Live",offline:"Offline",authentication_failed:"Authentication failure",retrying:"Retrying",stopped:"Stopped"}[camera.connectionState] || camera.connectionState; }
 function stopAllStreams() { for (const stop of state.streamStops.values()) stop(); state.streamStops.clear(); }
+window.addEventListener("pagehide", stopAllStreams);
 function findBytes(bytes, needle, from=0) { for (let i=Math.max(0,from);i<=bytes.length-needle.length;i++) if (needle.every((b,j)=>bytes[i+j]===b)) return i; return -1; }
 
 async function renderMjpeg(cameraId, image) {
   const controller = new AbortController();
   state.streamStops.get(cameraId)?.();
-  state.streamStops.set(cameraId, () => { controller.abort(); image.removeAttribute("src"); });
+  const stop = () => { controller.abort(); image.removeAttribute("src"); };
+  state.streamStops.set(cameraId, stop);
   try {
     const response = await fetch("/api/cameras/" + cameraId + "/stream", { headers: { Authorization: "Bearer " + state.token }, signal: controller.signal });
     if (!response.ok) throw new Error("Stream unavailable");
@@ -137,12 +146,180 @@ async function renderMjpeg(cameraId, image) {
       let start=findBytes(buffer,[0xff,0xd8]),end=findBytes(buffer,[0xff,0xd9],start+2); while(start>=0&&end>=0){const old=image.src;image.src=URL.createObjectURL(new Blob([buffer.slice(start,end+2)],{type:"image/jpeg"}));if(old.startsWith("blob:"))URL.revokeObjectURL(old);buffer=buffer.slice(end+2);start=findBytes(buffer,[0xff,0xd8]);end=findBytes(buffer,[0xff,0xd9],start+2);}
     }
   } catch (error) { if (error.name !== "AbortError") image.alt = "Stream unavailable"; }
-  finally { if (state.streamStops.has(cameraId) && controller.signal.aborted) state.streamStops.delete(cameraId); }
+  finally { if (state.streamStops.get(cameraId) === stop) state.streamStops.delete(cameraId); }
 }
 
-async function loadCameras(){if(!state.token)return;stopAllStreams();try{const cameras=await api("/api/cameras"),list=$("#camera-list");list.innerHTML=cameras.length?"":'<p class="empty">No cameras configured.</p>';
-  for(const camera of cameras){const card=document.createElement("article");card.className="camera-card";card.dataset.cameraId=camera.id;card.innerHTML=`<div class="camera-video"><img alt="Live recognition"><div class="stream-state state-${camera.connectionState}">${statusText(camera)}</div>${camera.running?'<button class="stream-stop" type="button" aria-label="Turn off camera stream">Turn off</button>':""}</div><div class="camera-meta"><div><strong></strong><small></small></div><div class="camera-actions"><button class="ghost edit">Edit</button><button class="ghost toggle"></button><button class="ghost remove">Delete</button></div></div>`;card.querySelector("strong").textContent=camera.name;card.querySelector("small").textContent=camera.host;card.querySelector(".edit").onclick=async()=>{const name=prompt("Camera name",camera.name);if(name===null)return;const url=prompt("New RTSP URL (leave blank to keep the saved URL)","");const change={name};if(url)change.url=url;await api(`/api/cameras/${camera.id}`,{method:"PATCH",body:JSON.stringify(change)});loadCameras();};const toggle=card.querySelector(".toggle"),streamStop=card.querySelector(".stream-stop");toggle.textContent=camera.running?"Turn off stream":"Start stream";const setStreamEnabled=async enabled=>{toggle.disabled=true;if(streamStop)streamStop.disabled=true;try{if(!enabled)state.streamStops.get(camera.id)?.();await api("/api/cameras/"+camera.id,{method:"PATCH",body:JSON.stringify({enabled})});loadCameras();}catch(error){$("#camera-error").textContent=error.message;}finally{toggle.disabled=false;if(streamStop)streamStop.disabled=false;}};toggle.onclick=()=>setStreamEnabled(!camera.running);if(streamStop)streamStop.onclick=()=>setStreamEnabled(false);card.querySelector(".remove").onclick=async()=>{await api(`/api/cameras/${camera.id}`,{method:"DELETE"});loadCameras();};list.appendChild(card);if(camera.running&&!state.streamStops.has(camera.id))renderMjpeg(camera.id,card.querySelector("img"));}
-}catch(error){$("#camera-error").textContent=error.message;}}
+async function triggerTestRecognition(camera, button) {
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "Starting…";
+  $("#camera-error").textContent = "";
+  let credential = null;
+  try {
+    credential = await api(`/api/cameras/${camera.id}/event-token`, { method: "POST" });
+    const form = new FormData();
+    form.append("sourceEventId", `manual-${crypto.randomUUID()}`);
+    form.append("eventType", "manual_test");
+    form.append("occurredAt", new Date().toISOString());
+    form.append("metadata", JSON.stringify({ source: "dashboard", manualTest: true }));
+    const event = await api(`/api/cameras/${camera.id}/events`, {
+      method: "POST", body: form, headers: { "X-Camera-Event-Token": credential.token }
+    });
+    button.textContent = "Recognition started";
+    setTimeout(() => { if (button.isConnected) { button.textContent = original; button.disabled = false; } }, 1800);
+    return event;
+  } catch (error) {
+    $("#camera-error").textContent = error.message;
+    button.textContent = original;
+    button.disabled = false;
+  } finally {
+    if (credential) {
+      try { await api(`/api/cameras/${camera.id}/event-tokens/${credential.id}`, { method: "DELETE" }); }
+      catch (_) {}
+    }
+  }
+}
+
+async function loadCameras() {
+  if (!state.token) return;
+  state.cameraLoadController?.abort();
+  const controller = new AbortController(), generation = ++state.cameraLoadGeneration;
+  state.cameraLoadController = controller;
+  stopAllStreams();
+  try {
+    const cameras = await api("/api/cameras", {signal: controller.signal});
+    if (controller.signal.aborted || generation !== state.cameraLoadGeneration) return;
+    const list = $("#camera-list");
+    list.innerHTML = cameras.length ? "" : '<p class="empty">No cameras configured.</p>';
+    for (const camera of cameras) {
+      const card = document.createElement("article");
+      card.className = "camera-card"; card.dataset.cameraId = camera.id;
+      card.innerHTML = `<div class="camera-video"><img alt="Live recognition"><div class="stream-state state-${camera.connectionState}">${statusText(camera)}</div>${camera.running?'<button class="stream-stop" type="button" aria-label="Turn off camera stream">Turn off</button>':""}</div><div class="camera-meta"><div><strong></strong><small></small></div><div class="camera-actions"><button class="ghost recognize-test">Test recognition</button><button class="ghost edit">Edit</button><button class="ghost toggle"></button><button class="ghost remove">Delete</button></div></div>`;
+      card.querySelector("strong").textContent = camera.name;
+      card.querySelector("small").textContent = camera.host;
+      const test = card.querySelector(".recognize-test");
+      test.disabled = !camera.running;
+      test.title = camera.running ? "Create a manual camera event" : "Start the camera before testing recognition";
+      test.onclick = () => triggerTestRecognition(camera, test);
+      card.querySelector(".edit").onclick = async () => {
+        const name = prompt("Camera name", camera.name); if (name === null) return;
+        const url = prompt("New RTSP URL (leave blank to keep the saved URL)", "");
+        const change = {name}; if (url) change.url = url;
+        await api(`/api/cameras/${camera.id}`, {method:"PATCH", body:JSON.stringify(change)}); loadCameras();
+      };
+      const toggle = card.querySelector(".toggle"), streamStop = card.querySelector(".stream-stop");
+      toggle.textContent = camera.running ? "Turn off stream" : "Start stream";
+      const setStreamEnabled = async enabled => {
+        toggle.disabled = true; if (streamStop) streamStop.disabled = true;
+        try {
+          if (!enabled) state.streamStops.get(camera.id)?.();
+          await api("/api/cameras/" + camera.id, {method:"PATCH", body:JSON.stringify({enabled})});
+          loadCameras();
+        } catch (error) { $("#camera-error").textContent = error.message; }
+        finally { toggle.disabled = false; if (streamStop) streamStop.disabled = false; }
+      };
+      toggle.onclick = () => setStreamEnabled(!camera.running);
+      if (streamStop) streamStop.onclick = () => setStreamEnabled(false);
+      card.querySelector(".remove").onclick = async () => {
+        await api(`/api/cameras/${camera.id}`, {method:"DELETE"}); loadCameras();
+      };
+      list.appendChild(card);
+      if (camera.running && !state.streamStops.has(camera.id)) renderMjpeg(camera.id, card.querySelector("img"));
+    }
+  } catch (error) {
+    if (error.name !== "AbortError" && generation === state.cameraLoadGeneration) $("#camera-error").textContent = error.message;
+  } finally {
+    if (state.cameraLoadController === controller) state.cameraLoadController = null;
+  }
+}
+
+function eventStateLabel(value) {
+  return value ? value.charAt(0).toUpperCase() + value.slice(1).replaceAll("_", " ") : "—";
+}
+
+async function expandEvent(card, eventId, button) {
+  const detail = card.querySelector(".event-detail");
+  if (!detail.classList.contains("hidden")) {
+    detail.classList.add("hidden"); button.textContent = "View details"; return;
+  }
+  button.disabled = true;
+  try {
+    const event = await api(`/api/camera-events/${eventId}`);
+    detail.innerHTML = "";
+    const facts = document.createElement("div"); facts.className = "event-detail-facts";
+    const values = [
+      ["Event type", event.event_type],
+      ["Source ID", event.source_event_id],
+      ["Occurred", formatDate(event.occurred_at)],
+      ["Dispatch", event.dispatch?.state || "—"],
+      ["Session", event.session?.session_state || "Not attached"],
+      ["Stream mode", event.session?.stream_mode || "—"],
+    ];
+    for (const [label, value] of values) {
+      const item = document.createElement("div");
+      item.innerHTML = "<span></span><strong></strong>";
+      item.querySelector("span").textContent = label; item.querySelector("strong").textContent = value;
+      facts.appendChild(item);
+    }
+    detail.appendChild(facts);
+    const error = event.error_message || event.session?.session_error_message || event.dispatch?.last_error_message;
+    if (error) { const message = document.createElement("p"); message.className = "event-failure"; message.textContent = error; detail.appendChild(message); }
+    const results = document.createElement("div"); results.className = "event-results";
+    if (!event.results.length) results.innerHTML = '<p class="empty">No recognition results yet.</p>';
+    for (const result of event.results) {
+      const row = document.createElement("div"); row.className = "event-result";
+      row.innerHTML = '<span class="outcome-badge"></span><strong></strong><span class="result-time"></span>';
+      row.querySelector(".outcome-badge").textContent = eventStateLabel(result.outcome);
+      row.querySelector("strong").textContent = result.displayed_label || (result.outcome === "no_face" ? "No face detected" : result.error_message || "Recognition result");
+      row.querySelector(".result-time").textContent = formatDate(result.capture_timestamp);
+      results.appendChild(row);
+    }
+    detail.appendChild(results);
+    if (event.screenshots.length) {
+      const images = document.createElement("div"); images.className = "event-screenshots";
+      for (const shot of event.screenshots) {
+        const link = document.createElement("a"); link.href = shot.contentPath; link.target = "_blank"; link.rel = "noopener";
+        link.textContent = `${eventStateLabel(shot.role)} image`; images.appendChild(link);
+      }
+      detail.appendChild(images);
+    }
+    detail.classList.remove("hidden"); button.textContent = "Hide details";
+  } catch (error) { $("#event-error").textContent = error.message; }
+  finally { button.disabled = false; }
+}
+
+async function loadEvents() {
+  if (!state.token) return;
+  const list = $("#event-list"), filter = $("#event-state-filter").value;
+  $("#event-error").textContent = "";
+  try {
+    const events = [];
+    for (let offset = 0;; offset += 200) {
+      const query = new URLSearchParams({limit: "200", offset: String(offset)});
+      if (filter) query.set("state", filter);
+      const page = await api(`/api/camera-events?${query}`);
+      events.push(...page);
+      if (page.length < 200) break;
+    }
+    $("#event-count").textContent = `${events.length} event${events.length === 1 ? "" : "s"}`;
+    list.innerHTML = events.length ? "" : '<p class="empty">No camera events recorded.</p>';
+    for (const event of events) {
+      const card = document.createElement("article"); card.className = "event-card";
+      card.innerHTML = '<div class="event-summary"><div><span class="event-camera"></span><h2></h2><p></p></div><span class="event-state"></span><button class="ghost event-expand">View details</button></div><div class="event-detail hidden"></div>';
+      card.querySelector(".event-camera").textContent = event.camera_name;
+      card.querySelector("h2").textContent = eventStateLabel(event.event_type);
+      card.querySelector("p").textContent = `${formatDate(event.accepted_at)} · ${event.source_event_id}`;
+      const badge = card.querySelector(".event-state");
+      badge.className = `event-state event-state-${event.state}`; badge.textContent = eventStateLabel(event.state);
+      const expand = card.querySelector(".event-expand");
+      expand.onclick = () => expandEvent(card, event.id, expand);
+      list.appendChild(card);
+    }
+  } catch (error) {
+    $("#event-error").textContent = error.message;
+    if (error.status === 401) showAuth();
+  }
+}
 
 async function loadIdentities(){
   if(!state.token)return; const list=$("#identity-list"); $("#identity-error").textContent="";

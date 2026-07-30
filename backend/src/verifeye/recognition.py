@@ -16,6 +16,7 @@ from .vision.processing import embed_face
 class RecognitionLabel:
     display_name: str
     similarity: float | None
+    identity_id: int | None = None
 
 
 class RecognitionEngine:
@@ -61,8 +62,8 @@ class IdentityMatcher:
         with EmbeddingStore(self.database) as store:
             matches = store.find_matches(embedding, limit=1, min_similarity=self.threshold)
         if not matches:
-            return RecognitionLabel("Unknown", None)
-        return RecognitionLabel(matches[0].display_name, matches[0].similarity)
+            return RecognitionLabel("Unknown", None, None)
+        return RecognitionLabel(matches[0].display_name, matches[0].similarity, matches[0].identity_id)
 
 
 def annotate(frame, faces_and_labels) -> np.ndarray:

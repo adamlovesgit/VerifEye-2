@@ -57,6 +57,8 @@ class EmbeddingStore:
         self._connection = sqlite3.connect(str(database))
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys = ON")
+        self._connection.execute("PRAGMA busy_timeout = 5000")
+        self._connection.execute("PRAGMA journal_mode = WAL")
         schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
         self._connection.executescript(schema)
         camera_columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(cameras)")}
