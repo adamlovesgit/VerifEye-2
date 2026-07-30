@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>VerifEye — Private face recognition</title>
   <meta name="description" content="Enroll a face securely on your own VerifEye system.">
+  <script>
+    (() => {
+      const saved = localStorage.getItem("verifeye_theme");
+      const theme = saved || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.dataset.theme = theme;
+      document.documentElement.style.colorScheme = theme;
+    })();
+  </script>
   <link rel="stylesheet" href="/assets/styles.css">
   <link rel="stylesheet" href="/assets/cameras.css">
   <script src="/assets/app.js" defer></script>
@@ -12,7 +20,7 @@
 <body>
   <header class="topbar">
     <a class="brand" href="/" aria-label="VerifEye home"><span class="mark" aria-hidden="true"></span>VerifEye</a>
-    <div id="app-nav" class="app-nav hidden"><button class="nav-link active" data-page="dashboard">Dashboard</button><button class="nav-link" data-page="identities">Identities</button><button id="logout" class="ghost">Sign out</button></div><div id="privacy-badge" class="privacy"><span></span> Local & private</div>
+    <div class="topbar-actions"><div id="app-nav" class="app-nav hidden"><button class="nav-link active" data-page="dashboard">Dashboard</button><button class="nav-link" data-page="identities">Identities</button><button id="logout" class="ghost">Sign out</button></div><div id="privacy-badge" class="privacy"><span></span> Local & private</div><button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false"><span class="theme-icon" aria-hidden="true">☾</span><span class="theme-label">Dark</span></button></div>
   </header>
 
   <main>

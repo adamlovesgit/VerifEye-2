@@ -1,0 +1,4 @@
+# Complete development and testing environment.
+# The backend requirement files remain split by responsibility so they can
+# also be installed independently when a smaller environment is preferred.
+-r backend/requirements-dev.txt

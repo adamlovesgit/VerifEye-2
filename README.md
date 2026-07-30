@@ -6,6 +6,29 @@ The architecture for this application is inintally designed to be local first mo
 
 The recognition pipeline is migrated from VerifEye 1.0, a school project where the core logic for this project was first designed and implemented. 
 
+## Development setup
+
+Create and activate a virtual environment, then install the complete application
+and testing dependency set from the project root:
+
+```powershell
+python -m venv .venv
+# PowerShell
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+On Linux or macOS, activate the environment with:
+
+```bash
+source .venv/bin/activate
+```
+
+The root requirements file includes `backend/requirements-dev.txt`, which in
+turn includes the web and vision dependency sets. Those smaller files remain
+available when only part of the application is needed.
+
 ## Recognition pipeline integration test
 
 Install the recognition dependencies into the active Python environment:
@@ -130,5 +153,4 @@ Optional tuning variables are `VERIFEYE_RECOGNITION_FPS`,
 `VERIFEYE_SIMILARITY_THRESHOLD`, `VERIFEYE_FRAME_FRESHNESS_SECONDS`,
 `VERIFEYE_RTSP_TIMEOUT_SECONDS`, `VERIFEYE_CLEANUP_TIMEOUT_SECONDS`, and
 `VERIFEYE_MAX_ACTIVE_CAMERAS`.
-
 

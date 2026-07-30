@@ -13,6 +13,20 @@ class ConnectionState(str, Enum):
     RETRYING = "retrying"
 
 
+class RecognitionSessionState(str, Enum):
+    IDLE = "idle"
+    STARTING = "starting"
+    ACTIVE = "active"
+    STOPPING = "stopping"
+
+
+class RecognitionStreamMode(str, Enum):
+    NONE = "none"
+    SHARED_LIGHTWEIGHT = "shared_lightweight"
+    DEDICATED = "dedicated"
+    LIGHTWEIGHT_FALLBACK = "lightweight_fallback"
+
+
 @dataclass(frozen=True)
 class Camera:
     id: int
@@ -21,6 +35,7 @@ class Camera:
     sanitized_host: str
     source_type: str
     enabled: bool
+    recognition_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -33,6 +48,23 @@ class CameraStatus:
     last_error: str | None = None
     retry_attempt: int = 0
     next_retry_at: float | None = None
+    recognition_session_state: RecognitionSessionState = RecognitionSessionState.IDLE
+    recognition_stream_mode: RecognitionStreamMode = RecognitionStreamMode.NONE
+    recognition_session_started_at: float | None = None
+    recognition_deadline: float | None = None
+    recognition_maximum_deadline: float | None = None
+    recognition_error: str | None = None
+
+
+@dataclass(frozen=True)
+class RecognitionSessionStatus:
+    camera_id: int
+    state: RecognitionSessionState
+    stream_mode: RecognitionStreamMode
+    started_at: float | None
+    deadline: float | None
+    maximum_deadline: float | None
+    extended: bool
 
 
 class CameraError(Exception): pass

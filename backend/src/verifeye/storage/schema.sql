@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 INSERT OR IGNORE INTO schema_version(version) VALUES (1);
 INSERT OR IGNORE INTO schema_version(version) VALUES (2);
 INSERT OR IGNORE INTO schema_version(version) VALUES (3);
+INSERT OR IGNORE INTO schema_version(version) VALUES (4);
 
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
@@ -63,6 +64,8 @@ CREATE TABLE IF NOT EXISTS cameras (
     name TEXT NOT NULL UNIQUE COLLATE NOCASE,
     encrypted_url BLOB NOT NULL UNIQUE,
     url_fingerprint TEXT NOT NULL UNIQUE,
+    recognition_encrypted_url BLOB,
+    recognition_url_fingerprint TEXT,
     sanitized_host TEXT NOT NULL,
     source_type TEXT NOT NULL DEFAULT 'manual'
         CHECK (source_type IN ('manual', 'onvif')),

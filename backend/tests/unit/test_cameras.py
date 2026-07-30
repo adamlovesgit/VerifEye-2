@@ -37,6 +37,20 @@ class CameraRepositoryTests(unittest.TestCase):
     def test_manual_validation_is_syntax_only(self):
         self.assertEqual(validate_rtsp_url("rtsp://camera.local/live"), "rtsp://camera.local/live")
         with self.assertRaises(ValueError): validate_rtsp_url("http://camera.local/live")
+    def test_recognition_url_is_encrypted_independently(self):
+        camera = self.repository.create(
+            "Door", "rtsp://camera.local/light", False, recognition_url="rtsp://camera.local/main"
+        )
+        self.assertEqual(camera.recognition_url, "rtsp://camera.local/main")
+        raw = self.database.read_bytes()
+        self.assertNotIn(b"rtsp://camera.local/light", raw)
+        self.assertNotIn(b"rtsp://camera.local/main", raw)
+    def test_equivalent_recognition_url_uses_lightweight_connection(self):
+        camera = self.repository.create(
+            "Door", "rtsp://CAMERA.local:554/live", False,
+            recognition_url="RTSP://camera.local/live",
+        )
+        self.assertIsNone(camera.recognition_url)
 
 
 class BufferTests(unittest.TestCase):

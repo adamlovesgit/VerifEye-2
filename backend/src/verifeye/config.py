@@ -19,6 +19,10 @@ class Settings:
     rtsp_timeout_seconds: float = 8.0
     cleanup_timeout_seconds: float = 10.0
     max_active_cameras: int = 4
+    pre_roll_seconds: float = 5.0
+    recognition_window_seconds: float = 10.0
+    max_recognition_session_seconds: float = 60.0
+    pre_roll_max_frames: int = 150
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -34,10 +38,18 @@ class Settings:
             rtsp_timeout_seconds=float(os.getenv("VERIFEYE_RTSP_TIMEOUT_SECONDS", "8")),
             cleanup_timeout_seconds=float(os.getenv("VERIFEYE_CLEANUP_TIMEOUT_SECONDS", "10")),
             max_active_cameras=int(os.getenv("VERIFEYE_MAX_ACTIVE_CAMERAS", "4")),
+            pre_roll_seconds=float(os.getenv("VERIFEYE_PRE_ROLL_SECONDS", "5")),
+            recognition_window_seconds=float(os.getenv("VERIFEYE_RECOGNITION_WINDOW_SECONDS", "10")),
+            max_recognition_session_seconds=float(os.getenv("VERIFEYE_MAX_RECOGNITION_SESSION_SECONDS", "60")),
+            pre_roll_max_frames=int(os.getenv("VERIFEYE_PRE_ROLL_MAX_FRAMES", "150")),
         )
 
     def validate(self) -> None:
         if self.recognition_fps <= 0 or self.max_active_cameras < 1:
             raise ValueError("Recognition FPS and active-camera limit must be positive.")
+        if self.pre_roll_seconds < 0 or self.recognition_window_seconds <= 0 or self.max_recognition_session_seconds <= 0:
+            raise ValueError("Recognition session durations must be positive.")
+        if self.recognition_window_seconds > self.max_recognition_session_seconds or self.pre_roll_max_frames < 1:
+            raise ValueError("Recognition window must fit the session maximum and the pre-roll cap must be positive.")
         if not -1 <= self.similarity_threshold <= 1:
             raise ValueError("Similarity threshold must be between -1 and 1.")

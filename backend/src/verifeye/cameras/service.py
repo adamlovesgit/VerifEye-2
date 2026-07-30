@@ -7,21 +7,29 @@ from .security import validate_rtsp_url
 class CameraService:
     def __init__(self, repository, manager): self.repository, self.manager = repository, manager
     def list(self): return [(camera, self.manager.status(camera.id)) for camera in self.repository.list()]
-    def create(self, name, url, enabled=True, source_type="manual"):
+    def create(self, name, url, enabled=True, source_type="manual", recognition_url=None):
         if not name or not name.strip(): raise InvalidCameraConfiguration("Camera name is required.")
         if source_type not in {"manual", "onvif"}: raise InvalidCameraConfiguration("Camera source must be manual or onvif.")
         try: url = validate_rtsp_url(url)
         except ValueError as exc: raise InvalidCameraConfiguration(str(exc)) from exc
-        camera = self.repository.create(name, url, enabled, source_type)
+        if recognition_url:
+            try: recognition_url = validate_rtsp_url(recognition_url)
+            except ValueError as exc: raise InvalidCameraConfiguration(str(exc)) from exc
+        camera = self.repository.create(name, url, enabled, source_type, recognition_url)
         if enabled: self.manager.start(camera.id)
         return camera, self.manager.status(camera.id)
-    def update(self, camera_id, *, name=None, url=None, enabled=None):
+    def update(self, camera_id, *, name=None, url=None, enabled=None, recognition_url=...):
         if url is not None:
             try: url = validate_rtsp_url(url)
             except ValueError as exc: raise InvalidCameraConfiguration(str(exc)) from exc
+        if recognition_url is not ... and recognition_url:
+            try: recognition_url = validate_rtsp_url(recognition_url)
+            except ValueError as exc: raise InvalidCameraConfiguration(str(exc)) from exc
         old = self.repository.get(camera_id)
-        camera = self.repository.update(camera_id, name=name, url=url, enabled=enabled)
-        connection_changed = url is not None and url != old.url
+        camera = self.repository.update(camera_id, name=name, url=url, enabled=enabled, recognition_url=recognition_url)
+        connection_changed = (url is not None and url != old.url) or (
+            recognition_url is not ... and recognition_url != old.recognition_url
+        )
         if not camera.enabled: self.manager.stop(camera_id)
         elif connection_changed: self.manager.restart(camera_id)
         elif enabled is True and not self.manager.status(camera_id).running: self.manager.start(camera_id)

@@ -31,12 +31,14 @@ class CameraCreate(BaseModel):
     url: str = Field(min_length=8, max_length=2048)
     enabled: bool = True
     sourceType: str = "manual"
+    recognition_url: str | None = Field(default=None, alias="recognitionUrl", max_length=2048)
 
 
 class CameraUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     url: str | None = Field(default=None, min_length=8, max_length=2048)
     enabled: bool | None = None
+    recognition_url: str | None = Field(default=None, alias="recognitionUrl", max_length=2048)
 
 
 class OnvifCredentials(BaseModel):
@@ -72,7 +74,13 @@ def camera_json(camera, status):
     return {"id": camera.id, "name": camera.name, "host": camera.sanitized_host, "sourceType": camera.source_type,
             "enabled": camera.enabled, "running": status.running, "connectionState": status.connection_state.value,
             "lastFrameAt": status.last_frame_at, "lastError": status.last_error, "retryAttempt": status.retry_attempt,
-            "nextRetryAt": status.next_retry_at}
+            "nextRetryAt": status.next_retry_at, "hasRecognitionStream": camera.recognition_url is not None,
+            "recognitionSessionState": status.recognition_session_state.value,
+            "recognitionStreamMode": status.recognition_stream_mode.value,
+            "recognitionSessionStartedAt": status.recognition_session_started_at,
+            "recognitionDeadline": status.recognition_deadline,
+            "recognitionMaximumDeadline": status.recognition_maximum_deadline,
+            "recognitionError": status.recognition_error}
 
 
 @asynccontextmanager
@@ -84,7 +92,11 @@ async def lifespan(application: FastAPI):
     engine = RecognitionEngine(settings.model_path)
     matcher = IdentityMatcher(settings.database, settings.similarity_threshold)
     manager = CameraManager(repository, engine, matcher, settings.recognition_fps, settings.rtsp_timeout_seconds,
-                            settings.cleanup_timeout_seconds, settings.max_active_cameras)
+                            settings.cleanup_timeout_seconds, settings.max_active_cameras,
+                            pre_roll_seconds=settings.pre_roll_seconds,
+                            recognition_window_seconds=settings.recognition_window_seconds,
+                            max_session_seconds=settings.max_recognition_session_seconds,
+                            pre_roll_max_frames=settings.pre_roll_max_frames)
     application.state.settings, application.state.engine = settings, engine
     application.state.manager = manager; application.state.cameras = CameraService(repository, manager)
     application.state.enrollment = EnrollmentService(settings.database, settings.upload_dir, engine)
@@ -182,7 +194,7 @@ def list_cameras(_user=Depends(current_user)): return [camera_json(*item) for it
 
 @app.post("/api/cameras", status_code=201)
 def create_camera(payload: CameraCreate, _user=Depends(current_user)):
-    return camera_json(*app.state.cameras.create(payload.name, payload.url, payload.enabled, payload.sourceType))
+    return camera_json(*app.state.cameras.create(payload.name, payload.url, payload.enabled, payload.sourceType, payload.recognition_url))
 
 
 @app.patch("/api/cameras/{camera_id}")

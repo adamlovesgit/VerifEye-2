@@ -1,6 +1,6 @@
 """Encryption and sanitization for camera connection strings."""
 
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 
 class CredentialCipher:
@@ -37,3 +37,17 @@ def sanitized_host(value: str) -> str:
     parsed = urlsplit(value)
     host = parsed.hostname or ""
     return f"{host}:{parsed.port}" if parsed.port else host
+
+
+def normalized_rtsp_url(value: str) -> str:
+    """Canonical comparison form without changing the connection string."""
+    parsed = urlsplit(value.strip())
+    host = (parsed.hostname or "").lower()
+    default_port = 554 if parsed.scheme.lower() == "rtsp" else 322
+    port = "" if parsed.port in (None, default_port) else f":{parsed.port}"
+    credentials = ""
+    if parsed.username is not None:
+        credentials = parsed.username
+        if parsed.password is not None: credentials += f":{parsed.password}"
+        credentials += "@"
+    return urlunsplit((parsed.scheme.lower(), f"{credentials}{host}{port}", parsed.path or "/", parsed.query, parsed.fragment))

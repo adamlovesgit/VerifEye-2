@@ -1,6 +1,23 @@
 const $ = (selector) => document.querySelector(selector);
 const state = { mode: "login", token: localStorage.getItem("verifeye_token"), file: null, streamStops: new Map(), currentUser: null };
 
+function setTheme(theme) {
+  const dark = theme === "dark";
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+  $("#theme-toggle").setAttribute("aria-pressed", String(dark));
+  $("#theme-toggle").setAttribute("aria-label", `Switch to ${dark ? "light" : "dark"} mode`);
+  $(".theme-icon").textContent = dark ? "☀" : "☾";
+  $(".theme-label").textContent = dark ? "Light" : "Dark";
+}
+
+setTheme(document.documentElement.dataset.theme || "light");
+$("#theme-toggle").addEventListener("click", () => {
+  const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  localStorage.setItem("verifeye_theme", theme);
+  setTheme(theme);
+});
+
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (state.token) headers.Authorization = `Bearer ${state.token}`;

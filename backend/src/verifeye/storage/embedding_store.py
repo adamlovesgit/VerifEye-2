@@ -59,6 +59,12 @@ class EmbeddingStore:
         self._connection.execute("PRAGMA foreign_keys = ON")
         schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
         self._connection.executescript(schema)
+        camera_columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(cameras)")}
+        with self._connection:
+            if "recognition_encrypted_url" not in camera_columns:
+                self._connection.execute("ALTER TABLE cameras ADD COLUMN recognition_encrypted_url BLOB")
+            if "recognition_url_fingerprint" not in camera_columns:
+                self._connection.execute("ALTER TABLE cameras ADD COLUMN recognition_url_fingerprint TEXT")
 
     def __enter__(self) -> "EmbeddingStore":
         return self
