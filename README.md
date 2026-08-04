@@ -149,8 +149,7 @@ $env:VERIFEYE_TEST_RTSP_URL = "rtsp://user:password@camera.local/stream"
 python backend/tests/integration/live_camera.py --seconds 10
 ```
 
-Optional tuning variables are `VERIFEYE_RECOGNITION_FPS`,
+Optional tuning variables are `VERIFEYE_RECOGNITION_FPS`, `VERIFEYE_PREVIEW_FPS`,
 `VERIFEYE_SIMILARITY_THRESHOLD`, `VERIFEYE_FRAME_FRESHNESS_SECONDS`,
 `VERIFEYE_RTSP_TIMEOUT_SECONDS`, `VERIFEYE_CLEANUP_TIMEOUT_SECONDS`, and
 `VERIFEYE_MAX_ACTIVE_CAMERAS`.
-

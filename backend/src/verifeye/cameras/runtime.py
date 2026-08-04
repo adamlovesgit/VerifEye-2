@@ -16,7 +16,6 @@ from .models import (
     ActiveCameraLimitReached, CameraStatus, ConnectionState,
     RecognitionSessionState, RecognitionSessionStatus, RecognitionStreamMode,
 )
-from ..recognition import annotate
 from ..vision import create_face_detector, process_frame
 
 logger = logging.getLogger(__name__)
@@ -106,9 +105,11 @@ class CameraWorker:
     def __init__(self, camera, engine, matcher, fps, timeout, source_factory=PyAvFrameSource,
                  pre_roll_seconds=5.0, recognition_window_seconds=10.0,
                  max_session_seconds=60.0, pre_roll_max_frames=150,
-                 detector_factory=create_face_detector, frame_processor=process_frame, clock=time.time):
+                 detector_factory=create_face_detector, frame_processor=process_frame, clock=time.time,
+                 preview_fps=20.0):
         self.camera, self.engine, self.matcher = camera, engine, matcher
-        self.period, self.timeout, self.source_factory = 1 / fps, timeout, source_factory
+        self.period, self.preview_period = 1 / fps, 1 / preview_fps
+        self.timeout, self.source_factory = timeout, source_factory
         self.pre_roll = PreRollBuffer(pre_roll_seconds, pre_roll_max_frames)
         self.window_seconds, self.max_session_seconds = recognition_window_seconds, max_session_seconds
         self.detector_factory, self.frame_processor, self.clock = detector_factory, frame_processor, clock
@@ -159,20 +160,21 @@ class CameraWorker:
                 with self._lock:
                     self._source, self._source_generation = source, self._source_generation + 1
                     generation = self._source_generation
-                attempt, last_sample = 0, 0.0
+                attempt, last_sample, last_preview = 0, 0.0, 0.0
                 for frame in source.frames():
                     if self._stop.is_set(): break
                     now = self.clock()
-                    if now - last_sample < self.period: continue
-                    last_sample = now
-                    with self._lock:
-                        self._sequence += 1
-                        sequence, idle = self._sequence, self._session_state == RecognitionSessionState.IDLE
-                    record = FrameRecord(self.camera.id, sequence, generation, now, "lightweight", _owned_frame(frame))
-                    self.pre_roll.put(record); self.latest.put(record)
-                    if idle:
-                        ok, jpeg = cv2.imencode(".jpg", record.frame, [cv2.IMWRITE_JPEG_QUALITY, 82])
+                    if now - last_preview >= self.preview_period:
+                        last_preview = now
+                        ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 82])
                         if ok: self.publisher.publish(jpeg.tobytes())
+                    if now - last_sample >= self.period:
+                        last_sample = now
+                        with self._lock:
+                            self._sequence += 1
+                            sequence = self._sequence
+                        record = FrameRecord(self.camera.id, sequence, generation, now, "lightweight", _owned_frame(frame))
+                        self.pre_roll.put(record); self.latest.put(record)
                     self._set(connection_state=ConnectionState.LIVE, last_frame_at=now)
                 if not self._stop.is_set(): raise OSError("RTSP stream ended")
             except Exception as exc:
@@ -264,9 +266,6 @@ class CameraWorker:
                     "image_bytes": crop.tobytes() if crop_ok else None,
                 })
             self._result_callback(self._durable_session_id, results)
-        ok, jpeg = cv2.imencode(".jpg", annotate(frame, labeled), [cv2.IMWRITE_JPEG_QUALITY, 82])
-        if ok: self.publisher.publish(jpeg.tobytes())
-
     def _recognition_loop(self, generation, snapshot, lightweight_boundary):
         detector = dedicated_decoder = None
         with self._lock:
@@ -397,11 +396,12 @@ class CameraWorker:
 class CameraManager:
     def __init__(self, repository, engine, matcher, fps=2.0, timeout=8.0, cleanup_timeout=10.0, max_active=4,
                  worker_factory=CameraWorker, pre_roll_seconds=5.0, recognition_window_seconds=10.0,
-                 max_session_seconds=60.0, pre_roll_max_frames=150):
+                 max_session_seconds=60.0, pre_roll_max_frames=150, preview_fps=20.0):
         self.repository, self.engine, self.matcher = repository, engine, matcher
         self.fps, self.timeout, self.cleanup_timeout, self.max_active, self.worker_factory = fps, timeout, cleanup_timeout, max_active, worker_factory
         self.pre_roll_seconds, self.recognition_window_seconds = pre_roll_seconds, recognition_window_seconds
         self.max_session_seconds, self.pre_roll_max_frames = max_session_seconds, pre_roll_max_frames
+        self.preview_fps = preview_fps
         self._workers, self._cleanup_threads, self._lock, self._shutting_down = {}, set(), threading.RLock(), False
     def start(self, camera_id):
         with self._lock:
@@ -412,7 +412,8 @@ class CameraManager:
             try:
                 worker = self.worker_factory(camera, self.engine, self.matcher, self.fps, self.timeout,
                     pre_roll_seconds=self.pre_roll_seconds, recognition_window_seconds=self.recognition_window_seconds,
-                    max_session_seconds=self.max_session_seconds, pre_roll_max_frames=self.pre_roll_max_frames)
+                    max_session_seconds=self.max_session_seconds, pre_roll_max_frames=self.pre_roll_max_frames,
+                    preview_fps=self.preview_fps)
             except TypeError:
                 worker = self.worker_factory(camera, self.engine, self.matcher, self.fps, self.timeout)
             self._workers[camera_id] = worker; worker.start(); return worker.status

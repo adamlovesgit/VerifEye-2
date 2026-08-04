@@ -78,6 +78,22 @@ class TriggeredRuntimeTests(unittest.TestCase):
         finally:
             worker.stop(1)
 
+    def test_preview_rate_is_independent_from_recognition_sampling(self):
+        calls, detectors = [], []
+        worker, source = self.make_worker(calls, detectors)
+        worker.period = .1
+        worker.preview_period = .02
+        worker.start()
+        try:
+            wait_for(lambda: worker.publisher.wait_after(0, 0)[0] >= 1)
+            time.sleep(.16)
+            preview_sequence = worker.publisher.wait_after(0, 0)[0]
+            self.assertGreaterEqual(preview_sequence, 5)
+            self.assertLessEqual(worker._sequence, 3)
+            self.assertEqual(calls, [])
+        finally:
+            worker.stop(1)
+
     def test_trigger_processes_preroll_then_live_frames(self):
         calls, detectors = [], []
         worker, source = self.make_worker(calls, detectors)

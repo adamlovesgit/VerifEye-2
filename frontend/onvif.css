@@ -1,0 +1,30 @@
+.onvif-device {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 1fr 1fr auto;
+  gap: 12px;
+  align-items: end;
+  background: var(--white);
+  border: 1px solid var(--line);
+  padding: 16px;
+  margin-top: 12px;
+}
+.onvif-device label { margin: 0; }
+.onvif-endpoint { overflow-wrap: anywhere; align-self: center; }
+.onvif-profile {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 12px;
+  align-items: end;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+.onvif-profile label { margin: 0; }
+.onvif-device .error { grid-column: 1 / -1; margin: 0; }
+.onvif-device button { margin: 0; }
+
+@media (max-width: 850px) {
+  .onvif-device, .onvif-profile { grid-template-columns: 1fr; }
+  .onvif-profile { grid-column: auto; }
+  .onvif-device .error { grid-column: auto; }
+}

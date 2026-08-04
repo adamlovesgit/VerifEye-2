@@ -51,7 +51,9 @@ class OnvifCredentials(BaseModel):
     password: str
 
 class OnvifImport(OnvifCredentials):
-    token: str
+    token: str | None = None
+    preview_token: str | None = Field(default=None, alias="previewToken")
+    recognition_token: str | None = Field(default=None, alias="recognitionToken")
     name: str = Field(min_length=1, max_length=100)
 
 
@@ -100,7 +102,8 @@ async def lifespan(application: FastAPI):
                             pre_roll_seconds=settings.pre_roll_seconds,
                             recognition_window_seconds=settings.recognition_window_seconds,
                             max_session_seconds=settings.max_recognition_session_seconds,
-                            pre_roll_max_frames=settings.pre_roll_max_frames)
+                            pre_roll_max_frames=settings.pre_roll_max_frames,
+                            preview_fps=settings.preview_fps)
     event_repository = EventRepository(settings.database, settings.sqlite_busy_timeout_ms)
     screenshots = ScreenshotStorage(settings.event_screenshot_dir)
     event_repository.reconcile()
@@ -403,14 +406,21 @@ def onvif_profiles(payload: OnvifCredentials, _user=Depends(current_user)):
 @app.post("/api/onvif/import", status_code=201)
 def onvif_import(payload: OnvifImport, _user=Depends(current_user)):
     from urllib.parse import quote, urlsplit, urlunsplit
-    try:
-        profiles = app.state.onvif.profiles(payload.endpoint, payload.username, payload.password)
-        profile = next(item for item in profiles if item["token"] == payload.token)
+    def authenticated_url(profile):
         parsed = urlsplit(profile["uri"])
         host = parsed.hostname or ""; netloc = f"{quote(payload.username, safe='')}:{quote(payload.password, safe='')}@{host}"
         if parsed.port: netloc += f":{parsed.port}"
-        url = urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
-        return camera_json(*app.state.cameras.create(payload.name, url, True, "onvif"))
+        return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+    try:
+        profiles = app.state.onvif.profiles(payload.endpoint, payload.username, payload.password)
+        preview_token = payload.preview_token or payload.token
+        if not preview_token: raise StopIteration
+        preview = next(item for item in profiles if item["token"] == preview_token)
+        recognition = next((item for item in profiles if item["token"] == payload.recognition_token), None)
+        return camera_json(*app.state.cameras.create(
+            payload.name, authenticated_url(preview), True, "onvif",
+            authenticated_url(recognition) if recognition else None,
+        ))
     except StopIteration as exc: raise HTTPException(400, "The selected ONVIF profile no longer exists.") from exc
     except CameraError: raise
     except Exception as exc: raise HTTPException(502, "ONVIF camera import failed.") from exc

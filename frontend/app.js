@@ -333,7 +333,53 @@ async function loadIdentities(){
 function formatDate(value){if(!value)return "—";const normalized=value.includes("T")?value:value.replace(" ","T")+"Z";return new Intl.DateTimeFormat(undefined,{dateStyle:"medium",timeStyle:"short"}).format(new Date(normalized));}
 
 $("#camera-form").addEventListener("submit",async event=>{event.preventDefault();try{await api("/api/cameras",{method:"POST",body:JSON.stringify({name:$("#camera-name").value,url:$("#camera-url").value,enabled:true})});event.target.reset();loadCameras();}catch(error){$("#camera-error").textContent=error.message;}});
-$("#discover-onvif").addEventListener("click",async()=>{const panel=$("#onvif-panel"),devices=$("#onvif-devices");panel.classList.remove("hidden");devices.innerHTML="";$("#onvif-status").textContent="Searching the LAN…";try{const found=await api("/api/onvif/discover",{method:"POST"});$("#onvif-status").textContent=found.length?"Select a discovered device.":"No ONVIF devices found.";for(const device of found){const button=document.createElement("button");button.className="ghost";button.textContent=device.endpoint;button.onclick=()=>importOnvif(device.endpoint);devices.appendChild(button);}}catch(error){$("#onvif-status").textContent=error.message;}});
-async function importOnvif(endpoint){const username=prompt("ONVIF username");if(username===null)return;const password=prompt("ONVIF password");if(password===null)return;try{const profiles=await api("/api/onvif/profiles",{method:"POST",body:JSON.stringify({endpoint,username,password})});if(!profiles.length)throw new Error("No RTSP media profiles found.");const choices=profiles.map((p,i)=>`${i+1}: ${p.name}`).join("\n"),selected=Number(prompt(`Choose a media profile:\n${choices}`,"1"))-1;if(!profiles[selected])return;const name=prompt("Camera name",profiles[selected].name||"ONVIF camera");if(!name)return;await api("/api/onvif/import",{method:"POST",body:JSON.stringify({endpoint,username,password,token:profiles[selected].token,name})});$("#onvif-status").textContent="Camera imported and started.";loadCameras();}catch(error){$("#onvif-status").textContent=error.message;}}
+$("#discover-onvif").addEventListener("click", async event => {
+  const panel = $("#onvif-panel"), devices = $("#onvif-devices"), button = event.currentTarget;
+  panel.classList.remove("hidden"); devices.innerHTML = ""; button.disabled = true;
+  $("#onvif-status").textContent = "Searching the LAN…";
+  try {
+    const found = await api("/api/onvif/discover", {method:"POST"});
+    $("#onvif-status").textContent = found.length ? "Enter the camera credentials, then choose a stream." : "No ONVIF devices found.";
+    for (const device of found) renderOnvifDevice(device, devices);
+  } catch (error) { $("#onvif-status").textContent = error.message; }
+  finally { button.disabled = false; }
+});
+
+function renderOnvifDevice(device, container) {
+  const form = document.createElement("form"); form.className = "onvif-device";
+  form.innerHTML = '<strong class="onvif-endpoint"></strong><label>Username<input name="username" autocomplete="username"></label><label>Password<input name="password" type="password" autocomplete="current-password"></label><button class="ghost find-onvif-streams" type="button">Find streams</button><div class="onvif-profile hidden"><label>Preview stream<select name="previewToken"></select></label><label>Recognition stream<select name="recognitionToken"></select></label><label>Camera name<input name="name" maxlength="100"></label><button class="primary add-onvif" type="button">Add and start camera</button></div><p class="error" role="alert"></p>';
+  form.querySelector(".onvif-endpoint").textContent = device.endpoint;
+  form.querySelector(".find-onvif-streams").addEventListener("click", async event => {
+    const submit = event.currentTarget, error = form.querySelector(".error");
+    submit.disabled = true; error.textContent = "";
+    try {
+      const credentials = {endpoint:device.endpoint, username:form.elements.username.value, password:form.elements.password.value};
+      const profiles = await api("/api/onvif/profiles", {method:"POST", body:JSON.stringify(credentials)});
+      if (!profiles.length) throw new Error("No RTSP media profiles found.");
+      const preview = form.elements.previewToken, recognition = form.elements.recognitionToken;
+      preview.innerHTML = ""; recognition.innerHTML = '<option value="">Use preview stream</option>';
+      for (const profile of profiles) {
+        for (const select of [preview, recognition]) { const option = document.createElement("option"); option.value = profile.token; option.textContent = profile.name || profile.token; select.appendChild(option); }
+      }
+      const substream = profiles.findIndex(profile => /sub\s*stream|substream/i.test(profile.name || profile.token));
+      const mainstream = profiles.findIndex(profile => /main\s*stream|mainstream/i.test(profile.name || profile.token));
+      preview.selectedIndex = substream >= 0 ? substream : 0;
+      recognition.selectedIndex = mainstream >= 0 ? mainstream + 1 : 0;
+      form.elements.name.value = (profiles[mainstream >= 0 ? mainstream : 0].name || "ONVIF camera").replace(/[_ ]?(main|sub)\s*stream/i, "");
+      form.querySelector(".onvif-profile").classList.remove("hidden");
+    } catch (problem) { error.textContent = problem.message; }
+    finally { submit.disabled = false; }
+  });
+  form.querySelector(".add-onvif").addEventListener("click", async event => {
+    const add = event.currentTarget, error = form.querySelector(".error"), values = Object.fromEntries(new FormData(form));
+    if (!values.name.trim()) { error.textContent = "Camera name is required."; return; }
+    add.disabled = true; error.textContent = "";
+    try {
+      await api("/api/onvif/import", {method:"POST", body:JSON.stringify({...values, endpoint:device.endpoint})});
+      $("#onvif-status").textContent = "Camera added and stream started."; form.remove(); await loadCameras();
+    } catch (problem) { error.textContent = problem.message; add.disabled = false; }
+  });
+  container.appendChild(form);
+}
 async function pollCameraStatus(){if(!state.token||$("#dashboard-page").classList.contains("hidden"))return;try{for(const camera of await api("/api/cameras")){const card=document.querySelector(`[data-camera-id="${camera.id}"]`);if(!card)continue;const badge=card.querySelector(".stream-state");badge.className=`stream-state state-${camera.connectionState}`;badge.textContent=statusText(camera);}}catch(_){}}
 setInterval(pollCameraStatus,5000);

@@ -14,6 +14,7 @@ class Settings:
     model_path: Path
     camera_key: str
     recognition_fps: float = 2.0
+    preview_fps: float = 20.0
     similarity_threshold: float = 0.40
     frame_freshness_seconds: float = 5.0
     rtsp_timeout_seconds: float = 8.0
@@ -39,6 +40,7 @@ class Settings:
             model_path=Path(os.getenv("VERIFEYE_MODEL_PATH", Path.home() / ".insightface/models/buffalo_l/w600k_r50.onnx")),
             camera_key=os.getenv("VERIFEYE_CAMERA_KEY", ""),
             recognition_fps=float(os.getenv("VERIFEYE_RECOGNITION_FPS", "2")),
+            preview_fps=float(os.getenv("VERIFEYE_PREVIEW_FPS", "20")),
             similarity_threshold=float(os.getenv("VERIFEYE_SIMILARITY_THRESHOLD", "0.40")),
             frame_freshness_seconds=float(os.getenv("VERIFEYE_FRAME_FRESHNESS_SECONDS", "5")),
             rtsp_timeout_seconds=float(os.getenv("VERIFEYE_RTSP_TIMEOUT_SECONDS", "8")),
@@ -57,8 +59,8 @@ class Settings:
         )
 
     def validate(self) -> None:
-        if self.recognition_fps <= 0 or self.max_active_cameras < 1:
-            raise ValueError("Recognition FPS and active-camera limit must be positive.")
+        if self.recognition_fps <= 0 or self.preview_fps <= 0 or self.max_active_cameras < 1:
+            raise ValueError("Recognition FPS, preview FPS, and active-camera limit must be positive.")
         if self.pre_roll_seconds < 0 or self.recognition_window_seconds <= 0 or self.max_recognition_session_seconds <= 0:
             raise ValueError("Recognition session durations must be positive.")
         if self.recognition_window_seconds > self.max_recognition_session_seconds or self.pre_roll_max_frames < 1:
