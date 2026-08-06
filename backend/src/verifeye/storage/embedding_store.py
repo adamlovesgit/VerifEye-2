@@ -67,6 +67,10 @@ class EmbeddingStore:
                 self._connection.execute("ALTER TABLE cameras ADD COLUMN recognition_encrypted_url BLOB")
             if "recognition_url_fingerprint" not in camera_columns:
                 self._connection.execute("ALTER TABLE cameras ADD COLUMN recognition_url_fingerprint TEXT")
+            if "onvif_endpoint" not in camera_columns:
+                self._connection.execute("ALTER TABLE cameras ADD COLUMN onvif_endpoint TEXT")
+            if "onvif_encrypted_credentials" not in camera_columns:
+                self._connection.execute("ALTER TABLE cameras ADD COLUMN onvif_encrypted_credentials BLOB")
 
     def __enter__(self) -> "EmbeddingStore":
         return self

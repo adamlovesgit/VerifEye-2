@@ -51,6 +51,15 @@ class EventRepositoryTests(unittest.TestCase):
                 connection.execute("SELECT state FROM event_dispatch").fetchone()[0], "pending"
             )
 
+    def test_event_can_be_recorded_without_dispatching_recognition(self):
+        event = self.repository.accept_event(
+            1, "onvif-1", "onvif_motion", utcnow(), {"topic": "MotionAlarm"}, dispatch=False
+        )
+        self.assertTrue(event.created)
+        with self.repository.connect() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM camera_events").fetchone()[0], 1)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM event_dispatch").fetchone()[0], 0)
+
     def test_overlapping_events_share_one_session_and_event_has_one_link(self):
         occurred = utcnow()
         first = self.accept("one", occurred)

@@ -10,6 +10,7 @@ INSERT OR IGNORE INTO schema_version(version) VALUES (2);
 INSERT OR IGNORE INTO schema_version(version) VALUES (3);
 INSERT OR IGNORE INTO schema_version(version) VALUES (4);
 INSERT OR IGNORE INTO schema_version(version) VALUES (5);
+INSERT OR IGNORE INTO schema_version(version) VALUES (6);
 
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
@@ -70,6 +71,8 @@ CREATE TABLE IF NOT EXISTS cameras (
     sanitized_host TEXT NOT NULL,
     source_type TEXT NOT NULL DEFAULT 'manual'
         CHECK (source_type IN ('manual', 'onvif')),
+    onvif_endpoint TEXT,
+    onvif_encrypted_credentials BLOB,
     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

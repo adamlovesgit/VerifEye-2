@@ -21,6 +21,7 @@ from .cameras.service import OnvifGateway
 from .config import Settings
 from .enrollment import EnrollmentError, EnrollmentService
 from .events import EventDispatcher, EventRepository, InvalidEvent, ScreenshotStorage, parse_utc, utcnow
+from .onvif_events import OnvifEventManager
 from .recognition import IdentityMatcher, RecognitionEngine
 from .storage import EmbeddingStore
 
@@ -114,17 +115,21 @@ async def lifespan(application: FastAPI):
         settings.event_dispatch_max_attempts, screenshot_storage=screenshots,
     )
     application.state.settings, application.state.engine = settings, engine
-    application.state.manager = manager; application.state.cameras = CameraService(repository, manager)
-    application.state.enrollment = EnrollmentService(settings.database, settings.upload_dir, engine)
+    application.state.manager = manager
     application.state.onvif = OnvifGateway()
+    onvif_events = OnvifEventManager(repository, event_repository, application.state.onvif)
+    application.state.onvif_events = onvif_events
+    application.state.cameras = CameraService(repository, manager, onvif_events)
+    application.state.enrollment = EnrollmentService(settings.database, settings.upload_dir, engine)
     application.state.events, application.state.screenshots = event_repository, screenshots
     application.state.dispatcher = dispatcher
     try:
         manager.start_enabled()
+        onvif_events.start_enabled()
         dispatcher.start()
         yield
     finally:
-        dispatcher.stop(); manager.shutdown(); engine.close()
+        onvif_events.shutdown(); dispatcher.stop(); manager.shutdown(); engine.close()
 
 
 app = FastAPI(title="VerifEye", version="0.2.0", lifespan=lifespan)
@@ -417,10 +422,12 @@ def onvif_import(payload: OnvifImport, _user=Depends(current_user)):
         if not preview_token: raise StopIteration
         preview = next(item for item in profiles if item["token"] == preview_token)
         recognition = next((item for item in profiles if item["token"] == payload.recognition_token), None)
-        return camera_json(*app.state.cameras.create(
+        created = app.state.cameras.create(
             payload.name, authenticated_url(preview), True, "onvif",
             authenticated_url(recognition) if recognition else None,
-        ))
+            payload.endpoint, payload.username, payload.password,
+        )
+        return camera_json(*created)
     except StopIteration as exc: raise HTTPException(400, "The selected ONVIF profile no longer exists.") from exc
     except CameraError: raise
     except Exception as exc: raise HTTPException(502, "ONVIF camera import failed.") from exc

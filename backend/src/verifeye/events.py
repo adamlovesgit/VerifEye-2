@@ -132,7 +132,7 @@ class EventRepository:
 
     def accept_event(
         self, camera_id: int, source_event_id: str, event_type: str, occurred_at: datetime,
-        metadata: dict[str, Any], screenshot: dict[str, Any] | None = None,
+        metadata: dict[str, Any], screenshot: dict[str, Any] | None = None, *, dispatch: bool = True,
     ) -> AcceptedEvent:
         now = iso(utcnow())
         with self.connect() as connection:
@@ -160,11 +160,12 @@ class EventRepository:
                     (event_id, screenshot["relative_path"], screenshot["media_type"],
                      screenshot["byte_size"], screenshot["sha256"], now),
                 )
-            connection.execute(
-                """INSERT INTO event_dispatch(event_id, state, available_at, created_at, updated_at)
-                   VALUES (?, 'pending', ?, ?, ?)""",
-                (event_id, now, now, now),
-            )
+            if dispatch:
+                connection.execute(
+                    """INSERT INTO event_dispatch(event_id, state, available_at, created_at, updated_at)
+                       VALUES (?, 'pending', ?, ?, ?)""",
+                    (event_id, now, now, now),
+                )
         return AcceptedEvent(event_id, "accepted", now, True)
 
     def existing_event(self, camera_id: int, source_event_id: str) -> AcceptedEvent | None:

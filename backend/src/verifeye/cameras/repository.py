@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import hashlib
+import json
 import sqlite3
 from contextlib import contextmanager
 
@@ -38,8 +39,15 @@ class CameraRepository:
             raise CameraNotFound(f"Camera {camera_id} was not found.")
         return self._camera(row)
 
-    def create(self, name: str, url: str, enabled: bool, source_type: str = "manual", recognition_url: str | None = None) -> Camera:
+    def create(self, name: str, url: str, enabled: bool, source_type: str = "manual", recognition_url: str | None = None,
+               onvif_endpoint: str | None = None, onvif_username: str | None = None,
+               onvif_password: str | None = None) -> Camera:
         encrypted = self.cipher.encrypt(url)
+        onvif_credentials = None
+        if onvif_endpoint is not None:
+            onvif_credentials = self.cipher.encrypt(json.dumps({
+                "username": onvif_username or "", "password": onvif_password or "",
+            }, separators=(",", ":")))
         recognition_url = None if not recognition_url or normalized_rtsp_url(recognition_url) == normalized_rtsp_url(url) else recognition_url
         try:
             with self._connect() as db:
@@ -47,11 +55,12 @@ class CameraRepository:
                     """INSERT INTO cameras(
                            name, encrypted_url, url_fingerprint, recognition_encrypted_url,
                            recognition_url_fingerprint, sanitized_host, source_type, enabled
-                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                           , onvif_endpoint, onvif_encrypted_credentials
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (name.strip(), encrypted, hashlib.sha256(url.encode()).hexdigest(),
                      self.cipher.encrypt(recognition_url) if recognition_url else None,
                      hashlib.sha256(recognition_url.encode()).hexdigest() if recognition_url else None,
-                     sanitized_host(url), source_type, int(enabled)),
+                     sanitized_host(url), source_type, int(enabled), onvif_endpoint, onvif_credentials),
                 )
                 camera_id = int(cursor.lastrowid)
         except sqlite3.IntegrityError as exc:
@@ -84,6 +93,9 @@ class CameraRepository:
 
     def _camera(self, row) -> Camera:
         recognition = row["recognition_encrypted_url"]
+        encrypted_onvif = row["onvif_encrypted_credentials"]
+        credentials = json.loads(self.cipher.decrypt(encrypted_onvif)) if encrypted_onvif else {}
         return Camera(row["id"], row["name"], self.cipher.decrypt(row["encrypted_url"]),
                       row["sanitized_host"], row["source_type"], bool(row["enabled"]),
-                      self.cipher.decrypt(recognition) if recognition else None)
+                      self.cipher.decrypt(recognition) if recognition else None,
+                      row["onvif_endpoint"], credentials.get("username"), credentials.get("password"))

@@ -4,11 +4,13 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from fastapi import HTTPException
 from verifeye.app import OnvifCredentials, OnvifImport, app, onvif_import, onvif_profiles
+from verifeye.cameras.service import OnvifGateway
 
 
 class FakeOnvifGateway:
@@ -23,6 +25,37 @@ class FakeOnvifGateway:
             {"token": "main", "name": "Main stream", "uri": "rtsp://camera/main"},
             {"token": "sub", "name": "Sub stream", "uri": "rtsp://camera/sub"},
         ]
+
+
+class PullPointAddressTests(unittest.TestCase):
+    def test_pullpoint_binds_to_the_new_subscription_address(self):
+        namespace = "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription"
+        pullpoint = object()
+
+        class Camera:
+            instance = None
+            def __init__(self, host, port, username, password):
+                self.connection = (host, port, username, password)
+                self.xaddrs = {namespace: "http://camera/stale-subscription"}
+                Camera.instance = self
+            def create_events_service(self):
+                return SimpleNamespace(CreatePullPointSubscription=lambda: SimpleNamespace(
+                    SubscriptionReference=SimpleNamespace(
+                        Address=SimpleNamespace(_value_1="http://camera/new-subscription")
+                    )
+                ))
+            def create_pullpoint_service(self):
+                self.pullpoint_address = self.xaddrs[namespace]
+                return pullpoint
+
+        with patch.dict(sys.modules, {"onvif": SimpleNamespace(ONVIFCamera=Camera)}):
+            result = OnvifGateway().pullpoint(
+                "http://camera:8080/onvif/device_service", "admin", "secret"
+            )
+
+        self.assertIs(result, pullpoint)
+        self.assertEqual(Camera.instance.connection, ("camera", 8080, "admin", "secret"))
+        self.assertEqual(Camera.instance.pullpoint_address, "http://camera/new-subscription")
 
 
 class OnvifProfileRouteTests(unittest.TestCase):

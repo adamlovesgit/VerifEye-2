@@ -36,6 +36,9 @@ class Camera:
     source_type: str
     enabled: bool
     recognition_url: str | None = None
+    onvif_endpoint: str | None = None
+    onvif_username: str | None = None
+    onvif_password: str | None = None
 
 
 @dataclass(frozen=True)

@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+from dataclasses import replace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -15,6 +16,7 @@ from verifeye.cameras.models import Camera, ConnectionState, DuplicateCamera
 from verifeye.cameras.repository import CameraRepository
 from verifeye.cameras.runtime import CameraManager, FramePublisher, LatestFrame
 from verifeye.cameras.security import CredentialCipher, validate_rtsp_url
+from verifeye.cameras.service import CameraService
 from verifeye.storage import EmbeddingStore
 
 
@@ -52,6 +54,17 @@ class CameraRepositoryTests(unittest.TestCase):
             recognition_url="RTSP://camera.local/live",
         )
         self.assertIsNone(camera.recognition_url)
+    def test_onvif_credentials_are_encrypted_and_restored(self):
+        camera = self.repository.create(
+            "Door", "rtsp://camera.local/live", False, "onvif", None,
+            "http://camera.local/onvif/device_service", "admin", "camera-password",
+        )
+        self.assertEqual(camera.onvif_username, "admin")
+        self.assertEqual(camera.onvif_password, "camera-password")
+        self.assertEqual(camera.onvif_endpoint, "http://camera.local/onvif/device_service")
+        raw = self.database.read_bytes()
+        self.assertNotIn(b"camera-password", raw)
+        self.assertNotIn(b"admin", raw)
 
 
 class BufferTests(unittest.TestCase):
@@ -103,6 +116,34 @@ class ManagerTests(unittest.TestCase):
         self.assertNotIn(1, manager._workers)
         self.assertTrue(SlowWorker.cleanup_started.wait(.2))
         SlowWorker.cleanup_release.set()
+
+
+class CameraServiceOnvifLifecycleTests(unittest.TestCase):
+    def test_enabling_camera_starts_onvif_event_worker(self):
+        class Repository:
+            camera = Camera(1, "Door", "rtsp://host/live", "host", "onvif", False, None,
+                            "http://host/onvif/device_service", "admin", "secret")
+            def get(self, _camera_id): return self.camera
+            def update(self, _camera_id, **changes):
+                self.camera = replace(self.camera, enabled=changes["enabled"])
+                return self.camera
+        class Manager:
+            running = False
+            def status(self, _camera_id):
+                from verifeye.cameras.models import CameraStatus
+                return CameraStatus(1, Repository.camera.enabled, self.running,
+                                    ConnectionState.LIVE if self.running else ConnectionState.STOPPED)
+            def start(self, _camera_id): self.running = True; return self.status(1)
+            def stop(self, _camera_id): self.running = False; return self.status(1)
+        class Events:
+            def __init__(self): self.started = []
+            def start(self, camera_id): self.started.append(camera_id)
+            def stop(self, _camera_id): pass
+
+        repository, manager, events = Repository(), Manager(), Events()
+        CameraService(repository, manager, events).update(1, enabled=True)
+        self.assertTrue(manager.running)
+        self.assertEqual(events.started, [1])
 
 
 if __name__ == "__main__": unittest.main()
