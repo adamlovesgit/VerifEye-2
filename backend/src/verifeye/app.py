@@ -23,6 +23,7 @@ from .enrollment import EnrollmentError, EnrollmentService
 from .events import EventDispatcher, EventRepository, InvalidEvent, ScreenshotStorage, parse_utc, utcnow
 from .onvif_events import OnvifEventManager
 from .recognition import IdentityMatcher, RecognitionEngine
+from .notifications import NotificationError, NotificationRepository, NotificationWorker, ProviderSettings
 from .storage import EmbeddingStore
 
 
@@ -56,6 +57,23 @@ class OnvifImport(OnvifCredentials):
     preview_token: str | None = Field(default=None, alias="previewToken")
     recognition_token: str | None = Field(default=None, alias="recognitionToken")
     name: str = Field(min_length=1, max_length=100)
+
+
+class NotificationRulePayload(BaseModel):
+    identity_id: int | None = Field(default=None, alias="identityId")
+    is_fallback: bool = Field(default=False, alias="isFallback")
+    email_address: str | None = Field(default=None, alias="emailAddress", max_length=320)
+    phone_number: str | None = Field(default=None, alias="phoneNumber", max_length=32)
+    email_enabled: bool = Field(default=False, alias="emailEnabled")
+    sms_enabled: bool = Field(default=False, alias="smsEnabled")
+    outcomes: list[str]
+    camera_ids: list[int] = Field(default_factory=list, alias="cameraIds")
+    version: int | None = None
+
+
+class NotificationTestPayload(BaseModel):
+    rule_id: int = Field(alias="ruleId")
+    channel: str
 
 
 def database_store(request=None) -> EmbeddingStore:
@@ -113,23 +131,39 @@ async def lifespan(application: FastAPI):
         event_repository, manager, settings.pre_roll_seconds, settings.recognition_window_seconds,
         settings.max_recognition_session_seconds, settings.event_dispatch_lease_seconds,
         settings.event_dispatch_max_attempts, screenshot_storage=screenshots,
+        no_face_retention_days=settings.motion_no_face_retention_days,
+        unrecognized_retention_days=settings.motion_unrecognized_retention_days,
     )
     application.state.settings, application.state.engine = settings, engine
     application.state.manager = manager
     application.state.onvif = OnvifGateway()
-    onvif_events = OnvifEventManager(repository, event_repository, application.state.onvif)
+    onvif_events = OnvifEventManager(
+        repository, event_repository, application.state.onvif,
+        cooldown_seconds=settings.onvif_motion_cooldown_seconds,
+    )
     application.state.onvif_events = onvif_events
     application.state.cameras = CameraService(repository, manager, onvif_events)
     application.state.enrollment = EnrollmentService(settings.database, settings.upload_dir, engine)
     application.state.events, application.state.screenshots = event_repository, screenshots
     application.state.dispatcher = dispatcher
+    providers = ProviderSettings(
+        settings.smtp_host, settings.smtp_port, settings.smtp_username, settings.smtp_password,
+        settings.smtp_sender, settings.smtp_tls_mode, settings.twilio_account_sid,
+        settings.twilio_auth_token, settings.twilio_from_number, settings.public_base_url,
+    )
+    notifications = NotificationRepository(settings.database, settings.sqlite_busy_timeout_ms)
+    notification_worker = NotificationWorker(notifications, providers, settings.event_screenshot_dir)
+    dispatcher.notification_callback = lambda session_id: notifications.enqueue_session(session_id, providers.public_base_url)
+    application.state.notifications, application.state.notification_providers = notifications, providers
+    application.state.notification_worker = notification_worker
     try:
         manager.start_enabled()
         onvif_events.start_enabled()
         dispatcher.start()
+        notification_worker.start()
         yield
     finally:
-        onvif_events.shutdown(); dispatcher.stop(); manager.shutdown(); engine.close()
+        onvif_events.shutdown(); dispatcher.stop(); notification_worker.stop(); manager.shutdown(); engine.close()
 
 
 app = FastAPI(title="VerifEye", version="0.2.0", lifespan=lifespan)
@@ -220,6 +254,57 @@ def delete_identity(identity_id: int, _user=Depends(current_user)):
         target = (upload_dir / source_path).resolve()
         if target.is_relative_to(upload_dir): target.unlink(missing_ok=True)
     return Response(status_code=204)
+
+
+@app.get("/api/notification-settings")
+def notification_settings(_user=Depends(current_user)):
+    value = app.state.notifications.settings()
+    providers = app.state.notification_providers
+    value["providers"] = {"email": {"ready": providers.email_ready}, "sms": {"ready": providers.sms_ready}}
+    return value
+
+
+def notification_payload(payload: NotificationRulePayload) -> dict:
+    return payload.model_dump(by_alias=True)
+
+
+@app.post("/api/notification-rules", status_code=201)
+def create_notification_rule(payload: NotificationRulePayload, _user=Depends(current_user)):
+    try: rule_id = app.state.notifications.save_rule(notification_payload(payload))
+    except NotificationError as exc: raise HTTPException(422, str(exc)) from exc
+    return {"id": rule_id}
+
+
+@app.put("/api/notification-rules/{rule_id}")
+def update_notification_rule(rule_id: int, payload: NotificationRulePayload, _user=Depends(current_user)):
+    try: app.state.notifications.save_rule(notification_payload(payload), rule_id)
+    except NotificationError as exc: raise HTTPException(409 if "changed elsewhere" in str(exc) else 422, str(exc)) from exc
+    return {"id": rule_id}
+
+
+@app.delete("/api/notification-rules/{rule_id}", status_code=204)
+def delete_notification_rule(rule_id: int, _user=Depends(current_user)):
+    if not app.state.notifications.delete_rule(rule_id): raise HTTPException(404, "Notification rule not found.")
+    return Response(status_code=204)
+
+
+@app.post("/api/notification-tests", status_code=202)
+def test_notification(payload: NotificationTestPayload, _user=Depends(current_user)):
+    providers = app.state.notification_providers
+    if payload.channel == "email" and not providers.email_ready: raise HTTPException(409, "SMTP provider is not configured.")
+    if payload.channel == "sms" and not providers.sms_ready: raise HTTPException(409, "Twilio provider is not configured.")
+    try: delivery_id = app.state.notifications.enqueue_test(payload.rule_id, payload.channel, providers.public_base_url)
+    except NotificationError as exc: raise HTTPException(422, str(exc)) from exc
+    return {"id": delivery_id, "status": "queued"}
+
+
+@app.get("/api/notification-deliveries")
+def notification_deliveries(limit: int = 50, offset: int = 0, status: str | None = None,
+                            channel: str | None = None, _user=Depends(current_user)):
+    if not 1 <= limit <= 200 or offset < 0: raise HTTPException(422, "Invalid pagination.")
+    if status and status not in {"queued","claimed","retrying","sent","failed"}: raise HTTPException(422, "Invalid status filter.")
+    if channel and channel not in {"email","sms"}: raise HTTPException(422, "Invalid channel filter.")
+    return app.state.notifications.deliveries(limit, offset, status, channel)
 
 
 @app.get("/api/cameras")

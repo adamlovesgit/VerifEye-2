@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import threading
+import time
 from xml.etree import ElementTree
 
 from .events import parse_utc, utcnow
@@ -79,8 +80,8 @@ def _topic(value):
     return ""
 
 
-def normalize_motion_notification(notification):
-    """Return an ingestible motion event or None for non-active notifications."""
+def parse_motion_notification(notification):
+    """Return motion state and durable data, including cleared notifications."""
     element = _message_element(notification)
     xml = _xml_details(element) if element is not None else None
     raw = _serialized(notification)
@@ -91,9 +92,9 @@ def normalize_motion_notification(notification):
     motion_values = [value for name, value in items.items() if "motion" in name.lower()]
     if "motion" not in topic.lower() and not motion_values:
         return None
-    if not motion_values or not any(str(value).strip().lower() in {"true", "1", "yes", "on", "active"}
-                                    for value in motion_values):
-        return None
+    if not motion_values: return None
+    active = any(str(value).strip().lower() in {"true", "1", "yes", "on", "active"}
+                 for value in motion_values)
     occurred = (xml or {}).get("utc_time") or next((item.get("UtcTime") for item in _walk(raw)
                      if isinstance(item, dict) and item.get("UtcTime")), None)
     if isinstance(occurred, datetime):
@@ -109,19 +110,48 @@ def normalize_motion_notification(notification):
          "message_xml": (xml or {}).get("xml"), "notification": None if xml else raw}, default=str
     ))
     identity = json.dumps(metadata, sort_keys=True, separators=(",", ":"), default=str)
-    return occurred, metadata, hashlib.sha256(identity.encode()).hexdigest()
+    source_items = {name: value for name, value in items.items() if "motion" not in name.lower()}
+    source_identity = json.dumps({"topic": topic or "onvif_motion", "items": source_items},
+                                 sort_keys=True, separators=(",", ":"), default=str)
+    return active, occurred, metadata, hashlib.sha256(identity.encode()).hexdigest(), hashlib.sha256(source_identity.encode()).hexdigest()
+
+
+def normalize_motion_notification(notification):
+    """Return an ingestible active motion event or None."""
+    parsed = parse_motion_notification(notification)
+    if parsed is None or not parsed[0]: return None
+    _active, occurred, metadata, event_id, _source_id = parsed
+    return occurred, metadata, event_id
 
 
 class OnvifEventWorker:
-    def __init__(self, camera, repository, gateway, pull_timeout="PT5S", message_limit=32):
+    def __init__(self, camera, repository, gateway, pull_timeout="PT5S", message_limit=32,
+                 cooldown_seconds=20.0, clock=time.monotonic):
         self.camera, self.repository, self.gateway = camera, repository, gateway
         self.pull_timeout, self.message_limit = pull_timeout, message_limit
+        self.cooldown_seconds, self.clock = cooldown_seconds, clock
+        self._active_sources, self._last_trigger_at = set(), {}
         self._stop = threading.Event()
         self._thread = None
 
     def start(self):
         self._thread = threading.Thread(target=self._run, name=f"onvif-events-{self.camera.id}", daemon=True)
         self._thread.start()
+
+    def _handle_notification(self, notification):
+        parsed = parse_motion_notification(notification)
+        if parsed is None: return
+        active, occurred, metadata, event_id, source_id = parsed
+        if not active:
+            self._active_sources.discard(source_id)
+            return
+        if source_id in self._active_sources: return
+        self._active_sources.add(source_id)
+        now = self.clock()
+        if now - self._last_trigger_at.get(source_id, float("-inf")) < self.cooldown_seconds:
+            return
+        self._last_trigger_at[source_id] = now
+        self.repository.accept_event(self.camera.id, event_id, "onvif_motion", occurred, metadata)
 
     def _run(self):
         while not self._stop.is_set():
@@ -135,11 +165,7 @@ class OnvifEventWorker:
                         serialized = _serialized(response)
                         notifications = serialized.get("NotificationMessage", []) if isinstance(serialized, dict) else []
                     for notification in notifications or []:
-                        normalized = normalize_motion_notification(notification)
-                        if normalized is None: continue
-                        occurred, metadata, source_id = normalized
-                        self.repository.accept_event(self.camera.id, source_id, "onvif_motion", occurred,
-                                                     metadata)
+                        self._handle_notification(notification)
             except Exception as exc:
                 if self._stop.is_set(): return
                 logger.warning("ONVIF event subscription will reconnect for camera %s: %s",
@@ -152,9 +178,11 @@ class OnvifEventWorker:
 
 
 class OnvifEventManager:
-    def __init__(self, camera_repository, event_repository, gateway, worker_factory=OnvifEventWorker):
+    def __init__(self, camera_repository, event_repository, gateway, worker_factory=OnvifEventWorker,
+                 cooldown_seconds=20.0):
         self.camera_repository, self.event_repository = camera_repository, event_repository
         self.gateway, self.worker_factory = gateway, worker_factory
+        self.cooldown_seconds = cooldown_seconds
         self._workers = {}
         self._lock = threading.Lock()
 
@@ -163,7 +191,11 @@ class OnvifEventManager:
         if not (camera.enabled and camera.source_type == "onvif" and camera.onvif_endpoint): return
         with self._lock:
             if camera_id in self._workers: return
-            worker = self.worker_factory(camera, self.event_repository, self.gateway)
+            try:
+                worker = self.worker_factory(camera, self.event_repository, self.gateway,
+                                             cooldown_seconds=self.cooldown_seconds)
+            except TypeError:
+                worker = self.worker_factory(camera, self.event_repository, self.gateway)
             self._workers[camera_id] = worker
         worker.start()
 

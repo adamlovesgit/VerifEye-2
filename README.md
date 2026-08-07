@@ -152,4 +152,19 @@ python backend/tests/integration/live_camera.py --seconds 10
 Optional tuning variables are `VERIFEYE_RECOGNITION_FPS`, `VERIFEYE_PREVIEW_FPS`,
 `VERIFEYE_SIMILARITY_THRESHOLD`, `VERIFEYE_FRAME_FRESHNESS_SECONDS`,
 `VERIFEYE_RTSP_TIMEOUT_SECONDS`, `VERIFEYE_CLEANUP_TIMEOUT_SECONDS`, and
-`VERIFEYE_MAX_ACTIVE_CAMERAS`.
+`VERIFEYE_MAX_ACTIVE_CAMERAS`. ONVIF motion handling can be tuned with
+`VERIFEYE_ONVIF_MOTION_COOLDOWN_SECONDS` (default `20`),
+`VERIFEYE_MOTION_NO_FACE_RETENTION_DAYS` (default `7`), and
+`VERIFEYE_MOTION_UNRECOGNIZED_RETENTION_DAYS` (default `30`). Recognized motion
+events are retained.
+
+## Email and SMS notifications
+
+The Notifications page stores per-identity and fallback alert rules locally. Provider
+credentials are read only from the server environment and are never returned by the API.
+Configure SMTP with `VERIFEYE_SMTP_HOST`, `VERIFEYE_SMTP_PORT`,
+`VERIFEYE_SMTP_USERNAME`, `VERIFEYE_SMTP_PASSWORD`, `VERIFEYE_SMTP_SENDER`, and
+`VERIFEYE_SMTP_TLS_MODE` (`starttls`, `ssl`, or `none`). Configure SMS with
+`VERIFEYE_TWILIO_ACCOUNT_SID`, `VERIFEYE_TWILIO_AUTH_TOKEN`, and
+`VERIFEYE_TWILIO_FROM_NUMBER`. Set `VERIFEYE_PUBLIC_BASE_URL` to the URL recipients
+can use to reach this VerifEye instance from notification links.

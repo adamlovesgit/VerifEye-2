@@ -132,6 +132,35 @@ class EventRepositoryTests(unittest.TestCase):
         self.assertEqual(detail["screenshots"][0]["role"], "face_crop")
         self.assertIsNotNone(detail["screenshots"][0]["result_id"])
 
+    def test_motion_retention_keeps_recognized_and_prunes_by_outcome(self):
+        def completed(source, outcome, age_days):
+            event = self.repository.accept_event(
+                1, source, "onvif_motion", utcnow(), {}, dispatch=False
+            )
+            session_id, _ = self.repository.attach_event(event.id, 0, 1, 1)
+            self.repository.add_results(session_id, [{
+                "capture_timestamp": iso(utcnow()), "outcome": outcome,
+                "displayed_label": "test",
+            }])
+            self.repository.transition_session(session_id, "completed")
+            with self.repository.connect() as connection:
+                connection.execute(
+                    "UPDATE camera_events SET accepted_at = ? WHERE id = ?",
+                    (iso(utcnow() - timedelta(days=age_days)), event.id),
+                )
+            return event.id
+
+        recognized = completed("recognized-old", "recognized", 100)
+        unrecognized = completed("unknown-old", "unrecognized_face", 31)
+        no_face = completed("no-face-old", "no_face", 8)
+        recent = completed("no-face-recent", "no_face", 1)
+
+        self.assertEqual(self.repository.prune_motion_events(7, 30), 2)
+        self.assertIsNotNone(self.repository.get_event(recognized))
+        self.assertIsNone(self.repository.get_event(unrecognized))
+        self.assertIsNone(self.repository.get_event(no_face))
+        self.assertIsNotNone(self.repository.get_event(recent))
+
 
 if __name__ == "__main__":
     unittest.main()

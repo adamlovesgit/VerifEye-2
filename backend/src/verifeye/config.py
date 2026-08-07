@@ -29,7 +29,20 @@ class Settings:
     event_future_skew_seconds: float = 300.0
     event_dispatch_lease_seconds: float = 30.0
     event_dispatch_max_attempts: int = 5
+    onvif_motion_cooldown_seconds: float = 20.0
+    motion_no_face_retention_days: int = 7
+    motion_unrecognized_retention_days: int = 30
     sqlite_busy_timeout_ms: int = 5000
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_sender: str = ""
+    smtp_tls_mode: str = "starttls"
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_from_number: str = ""
+    public_base_url: str = "http://127.0.0.1:8000"
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -55,7 +68,20 @@ class Settings:
             event_future_skew_seconds=float(os.getenv("VERIFEYE_EVENT_FUTURE_SKEW_SECONDS", "300")),
             event_dispatch_lease_seconds=float(os.getenv("VERIFEYE_EVENT_DISPATCH_LEASE_SECONDS", "30")),
             event_dispatch_max_attempts=int(os.getenv("VERIFEYE_EVENT_DISPATCH_MAX_ATTEMPTS", "5")),
+            onvif_motion_cooldown_seconds=float(os.getenv("VERIFEYE_ONVIF_MOTION_COOLDOWN_SECONDS", "20")),
+            motion_no_face_retention_days=int(os.getenv("VERIFEYE_MOTION_NO_FACE_RETENTION_DAYS", "7")),
+            motion_unrecognized_retention_days=int(os.getenv("VERIFEYE_MOTION_UNRECOGNIZED_RETENTION_DAYS", "30")),
             sqlite_busy_timeout_ms=int(os.getenv("VERIFEYE_SQLITE_BUSY_TIMEOUT_MS", "5000")),
+            smtp_host=os.getenv("VERIFEYE_SMTP_HOST", ""),
+            smtp_port=int(os.getenv("VERIFEYE_SMTP_PORT", "587")),
+            smtp_username=os.getenv("VERIFEYE_SMTP_USERNAME", ""),
+            smtp_password=os.getenv("VERIFEYE_SMTP_PASSWORD", ""),
+            smtp_sender=os.getenv("VERIFEYE_SMTP_SENDER", ""),
+            smtp_tls_mode=os.getenv("VERIFEYE_SMTP_TLS_MODE", "starttls").lower(),
+            twilio_account_sid=os.getenv("VERIFEYE_TWILIO_ACCOUNT_SID", ""),
+            twilio_auth_token=os.getenv("VERIFEYE_TWILIO_AUTH_TOKEN", ""),
+            twilio_from_number=os.getenv("VERIFEYE_TWILIO_FROM_NUMBER", ""),
+            public_base_url=os.getenv("VERIFEYE_PUBLIC_BASE_URL", "http://127.0.0.1:8000"),
         )
 
     def validate(self) -> None:
@@ -71,5 +97,11 @@ class Settings:
             raise ValueError("Event timestamp bounds are invalid.")
         if self.event_dispatch_lease_seconds <= 0 or self.event_dispatch_max_attempts < 1:
             raise ValueError("Event dispatcher settings are invalid.")
+        if self.onvif_motion_cooldown_seconds < 0:
+            raise ValueError("ONVIF motion cooldown must not be negative.")
+        if self.motion_no_face_retention_days < 1 or self.motion_unrecognized_retention_days < 1:
+            raise ValueError("Motion-event retention must be at least one day.")
         if self.sqlite_busy_timeout_ms < 0:
             raise ValueError("SQLite busy timeout must not be negative.")
+        if not 1 <= self.smtp_port <= 65535 or self.smtp_tls_mode not in {"starttls", "ssl", "none"}:
+            raise ValueError("SMTP port or TLS mode is invalid.")

@@ -53,7 +53,7 @@ function showDashboard(user) {
   $("#app-view").classList.remove("hidden");
   $("#app-nav").classList.remove("hidden");
   $("#privacy-badge").classList.add("hidden");
-  showPage("dashboard");
+  showPage(new URLSearchParams(location.search).has("event") ? "events" : "dashboard");
 }
 
 function showAuth() {
@@ -83,11 +83,12 @@ function showPage(page) {
   $("#dashboard-page").classList.toggle("hidden", page !== "dashboard");
   $("#events-page").classList.toggle("hidden", page !== "events");
   $("#identities-page").classList.toggle("hidden", page !== "identities");
+  $("#notifications-page").classList.toggle("hidden", page !== "notifications");
   document.querySelectorAll(".nav-link").forEach(button => button.classList.toggle("active", button.dataset.page === page));
   if (page === "dashboard") loadCameras();
   else {
     stopAllStreams();
-    if (page === "events") loadEvents(); else loadIdentities();
+    if (page === "events") loadEvents(); else if (page === "identities") loadIdentities(); else loadNotifications();
   }
 }
 document.querySelectorAll(".nav-link").forEach(button => button.addEventListener("click", () => showPage(button.dataset.page)));
@@ -96,6 +97,9 @@ $("#refresh-identities").addEventListener("click", loadIdentities);
 $("#refresh-events").addEventListener("click", loadEvents);
 $("#event-state-filter").addEventListener("change", loadEvents);
 $("#open-events").addEventListener("click", () => showPage("events"));
+$("#refresh-notifications").addEventListener("click", loadNotifications);
+$("#delivery-channel").addEventListener("change", loadNotificationDeliveries);
+$("#delivery-status").addEventListener("change", loadNotificationDeliveries);
 
 $("#logout").addEventListener("click", async () => { try { await api("/api/auth/logout", { method: "POST" }); } finally { showAuth(); } });
 const photo = $("#photo"), zone = $("#drop-zone");
@@ -314,6 +318,7 @@ async function loadEvents() {
       const expand = card.querySelector(".event-expand");
       expand.onclick = () => expandEvent(card, event.id, expand);
       list.appendChild(card);
+      if (String(event.id) === new URLSearchParams(location.search).get("event")) expand.click();
     }
   } catch (error) {
     $("#event-error").textContent = error.message;
@@ -329,6 +334,82 @@ async function loadIdentities(){
       for(const item of identity.embeddings){const row=document.createElement("div");row.className="embedding-row";row.innerHTML="<div><strong></strong><span></span></div><div><span>Detection</span><strong></strong></div><div><span>Vector</span><strong></strong></div>";const parts=row.querySelectorAll("div");parts[0].querySelector("strong").textContent=item.metadata.original_name||item.sourcePath||"Unknown source";parts[0].querySelector("span").textContent=formatDate(item.createdAt);parts[1].querySelector("strong").textContent=item.detectionScore==null?"—":Math.round(item.detectionScore*100)+"%";parts[2].querySelector("strong").textContent=item.dimensions+"d";records.appendChild(row);}
       const remove=card.querySelector(".delete-identity");remove.className="ghost danger delete-identity";remove.onclick=async()=>{if(!confirm("Delete "+identity.displayName+" and all enrolled face records? This cannot be undone."))return;try{await api("/api/identities/"+identity.id,{method:"DELETE"});loadIdentities();}catch(error){$("#identity-error").textContent=error.message;}};list.appendChild(card);}
   }catch(error){$("#identity-error").textContent=error.message;if(error.status===401)showAuth();}
+}
+
+let notificationSettings = null;
+
+function notificationRuleCard(rule) {
+  const card = document.createElement("article"); card.className = "notification-rule";
+  const allowed = rule.isFallback ? ["unrecognized_face", "no_face", "processing_error"] : ["recognized"];
+  card.innerHTML = `<div class="rule-head"><div><h2></h2><p class="rule-subtitle"></p></div><button class="ghost danger delete-rule">Delete</button></div>
+    <div class="rule-grid"><label>Email address<input class="rule-email" type="email" maxlength="320" placeholder="alerts@example.com"></label><label>Phone number<input class="rule-phone" inputmode="tel" maxlength="32" placeholder="+15551234567"></label>
+    <div class="check-row channel-checks"><label><input class="email-enabled" type="checkbox"> Email enabled</label><label><input class="sms-enabled" type="checkbox"> SMS enabled</label></div><div class="check-row outcome-checks"></div><div class="camera-checks"></div></div>
+    <p class="rule-feedback" role="status"></p><div class="rule-actions"><button type="button" class="ghost test-email">Test email</button><button type="button" class="ghost test-sms">Test SMS</button><button type="button" class="ghost save-rule">Save rule</button></div>`;
+  card.querySelector("h2").textContent = rule.isFallback ? "System fallback" : rule.identityName;
+  card.querySelector(".rule-subtitle").textContent = rule.isFallback ? "Events without a recognized identity" : "When this identity is recognized";
+  card.querySelector(".rule-email").value = rule.emailAddress || ""; card.querySelector(".rule-phone").value = rule.phoneNumber || "";
+  card.querySelector(".email-enabled").checked = rule.emailEnabled; card.querySelector(".sms-enabled").checked = rule.smsEnabled;
+  for (const outcome of allowed) { const label=document.createElement("label"); label.innerHTML='<input type="checkbox"> <span></span>'; label.querySelector("input").value=outcome; label.querySelector("input").checked=rule.outcomes.includes(outcome); label.querySelector("span").textContent=eventStateLabel(outcome); card.querySelector(".outcome-checks").appendChild(label); }
+  const cameras = card.querySelector(".camera-checks");
+  if (!notificationSettings.cameras.length) cameras.textContent = "All cameras (none configured yet)";
+  for (const camera of notificationSettings.cameras) { const label=document.createElement("label"); label.innerHTML='<input type="checkbox"> <span></span>'; label.querySelector("input").value=camera.id; label.querySelector("input").checked=rule.cameraIds.includes(camera.id); label.querySelector("span").textContent=camera.name; cameras.appendChild(label); }
+  const payload = () => ({identityId:rule.identityId,isFallback:rule.isFallback,emailAddress:card.querySelector(".rule-email").value,phoneNumber:card.querySelector(".rule-phone").value,emailEnabled:card.querySelector(".email-enabled").checked,smsEnabled:card.querySelector(".sms-enabled").checked,outcomes:[...card.querySelectorAll(".outcome-checks input:checked")].map(i=>i.value),cameraIds:[...card.querySelectorAll(".camera-checks input:checked")].map(i=>Number(i.value)),version:rule.version});
+  const feedback=card.querySelector(".rule-feedback"),saveButton=card.querySelector(".save-rule");
+  const saveRule=async()=>{feedback.className="rule-feedback";feedback.textContent="Saving…";saveButton.disabled=true;try{await api(`/api/notification-rules/${rule.id}`,{method:"PUT",body:JSON.stringify(payload())});feedback.classList.add("success-text");feedback.textContent="Rule saved.";rule.version+=1;rule.emailAddress=card.querySelector(".rule-email").value;rule.phoneNumber=card.querySelector(".rule-phone").value;return true;}catch(error){feedback.classList.add("error-text");feedback.textContent=error.message;return false;}finally{saveButton.disabled=false;}};
+  saveButton.onclick=saveRule;
+  card.querySelector(".delete-rule").onclick=async()=>{if(!confirm(`Delete the ${rule.isFallback?"fallback":rule.identityName} notification rule?`))return;try{await api(`/api/notification-rules/${rule.id}`,{method:"DELETE"});await loadNotifications();}catch(error){$("#notification-error").textContent=error.message;}};
+  const test=async(channel,button)=>{button.disabled=true;feedback.className="rule-feedback";feedback.textContent=`Saving and queueing test ${channel}…`;try{if(!await saveRule())return;await api("/api/notification-tests",{method:"POST",body:JSON.stringify({ruleId:rule.id,channel})});feedback.classList.add("success-text");feedback.textContent=`Test ${channel} queued.`;await loadNotificationDeliveries();}catch(error){feedback.classList.add("error-text");feedback.textContent=error.message;}finally{button.disabled=false;}};
+  const testEmail=card.querySelector(".test-email"),testSms=card.querySelector(".test-sms");
+  testEmail.onclick=()=>test("email",testEmail);testSms.onclick=()=>test("sms",testSms);
+  testEmail.title=notificationSettings.providers.email.ready?"Save this rule and queue a test email":"SMTP is not configured on the server";
+  testSms.title=notificationSettings.providers.sms.ready?"Save this rule and queue a test SMS":"Twilio is not configured on the server";
+  return card;
+}
+
+async function loadNotifications(){
+  if(!state.token)return; $("#notification-error").textContent="";
+  try{
+    notificationSettings=await api("/api/notification-settings");
+    renderNewRuleTargets();
+    const providers=$("#provider-status");providers.innerHTML="";
+    for(const [channel,label] of [["email","SMTP email"],["sms","Twilio SMS"]]){const ready=notificationSettings.providers[channel].ready;const item=document.createElement("article");item.className="provider-card";item.innerHTML='<div><strong></strong><br><span></span></div><b class="provider-state"></b>';item.querySelector("strong").textContent=label;item.querySelector("span").textContent=ready?"Ready to deliver":"Configure server environment variables";item.querySelector("b").textContent=ready?"Ready":"Not configured";item.querySelector("b").classList.toggle("ready",ready);providers.appendChild(item);}
+    const list=$("#notification-rules");list.innerHTML=notificationSettings.rules.length?"":'<p class="empty">No notification rules configured.</p>';
+    notificationSettings.rules.forEach(rule=>list.appendChild(notificationRuleCard(rule)));
+    await loadNotificationDeliveries();
+  }catch(error){$("#notification-error").textContent=error.message;if(error.status===401)showAuth();}
+}
+
+function renderNewRuleTargets(){
+  if(!notificationSettings)return;
+  const existingFallback=notificationSettings.rules.some(rule=>rule.isFallback);
+  const available=notificationSettings.identities.filter(identity=>!notificationSettings.rules.some(rule=>rule.identityId===identity.id));
+  const select=$("#new-rule-target");select.innerHTML="";
+  if(!existingFallback){const option=document.createElement("option");option.value="fallback";option.textContent="System fallback";select.appendChild(option);}
+  for(const identity of available){const option=document.createElement("option");option.value=`identity:${identity.id}`;option.textContent=identity.displayName;select.appendChild(option);}
+  $("#add-notification-rule").disabled=!select.options.length;
+  $("#add-notification-rule").title=select.options.length?"Create a notification rule":"Rules already exist for every available target";
+}
+
+$("#add-notification-rule").addEventListener("click",()=>{
+  $("#notification-error").textContent="";
+  if(!notificationSettings){$("#notification-error").textContent="Notification settings are still loading. Try again in a moment.";return;}
+  renderNewRuleTargets();
+  if(!$("#new-rule-target").options.length){$("#notification-error").textContent="A fallback and rules for every identity already exist.";return;}
+  $("#new-notification-rule").classList.remove("hidden");$("#new-rule-target").focus();
+});
+$("#cancel-notification-rule").addEventListener("click",()=>$("#new-notification-rule").classList.add("hidden"));
+$("#create-notification-rule").addEventListener("click",async event=>{
+  const target=$("#new-rule-target").value;if(!target)return;
+  const isFallback=target==="fallback",identityId=isFallback?null:Number(target.split(":")[1]);
+  event.currentTarget.disabled=true;$("#notification-error").textContent="";
+  try{await api("/api/notification-rules",{method:"POST",body:JSON.stringify({identityId,isFallback,emailAddress:"",phoneNumber:"",emailEnabled:false,smsEnabled:false,outcomes:isFallback?["unrecognized_face","no_face","processing_error"]:["recognized"],cameraIds:[]})});$("#new-notification-rule").classList.add("hidden");await loadNotifications();}
+  catch(error){$("#notification-error").textContent=error.message;}
+  finally{event.currentTarget.disabled=false;}
+});
+
+async function loadNotificationDeliveries(){
+  if(!state.token)return;const query=new URLSearchParams({limit:"100"});const channel=$("#delivery-channel").value,status=$("#delivery-status").value;if(channel)query.set("channel",channel);if(status)query.set("status",status);
+  try{const deliveries=await api(`/api/notification-deliveries?${query}`);const list=$("#notification-deliveries");list.innerHTML=deliveries.length?"":'<p class="empty">No deliveries yet.</p>';for(const delivery of deliveries){const row=document.createElement("article");row.className="delivery-row";row.innerHTML='<strong class="delivery-channel"></strong><div><strong class="delivery-destination"></strong><div class="delivery-meta"></div></div><span class="delivery-status"></span><time></time>';row.querySelector(".delivery-channel").textContent=delivery.channel.toUpperCase();row.querySelector(".delivery-destination").textContent=delivery.destination;row.querySelector(".delivery-meta").textContent=`${eventStateLabel(delivery.outcome)} · ${delivery.identityName||delivery.cameraName||"Test"}${delivery.lastError?` · ${delivery.lastError}`:""}`;row.querySelector(".delivery-status").textContent=delivery.status;row.querySelector(".delivery-status").classList.add(delivery.status);row.querySelector("time").textContent=formatDate(delivery.createdAt);list.appendChild(row);}}catch(error){$("#notification-error").textContent=error.message;}
 }
 function formatDate(value){if(!value)return "—";const normalized=value.includes("T")?value:value.replace(" ","T")+"Z";return new Intl.DateTimeFormat(undefined,{dateStyle:"medium",timeStyle:"short"}).format(new Date(normalized));}
 

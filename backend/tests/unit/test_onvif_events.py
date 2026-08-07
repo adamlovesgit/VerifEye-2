@@ -96,5 +96,22 @@ class OnvifEventTests(unittest.TestCase):
             ).fetchone()
             self.assertEqual(dict(dispatch), {"state": "pending", "attempts": 0})
 
+    def test_active_edge_and_cooldown_suppress_motion_bursts(self):
+        calls = []
+        repository = SimpleNamespace(accept_event=lambda *args: calls.append(args))
+        camera = SimpleNamespace(id=1)
+        clock_values = iter([0.0, 5.0, 25.0])
+        worker = OnvifEventWorker(
+            camera, repository, Gateway(), cooldown_seconds=20,
+            clock=lambda: next(clock_values),
+        )
+        worker._handle_notification(notification("true"))
+        worker._handle_notification(notification("true"))
+        worker._handle_notification(notification("false"))
+        worker._handle_notification(notification("true"))
+        worker._handle_notification(notification("false"))
+        worker._handle_notification(notification("true"))
+        self.assertEqual(len(calls), 2)
+
 
 if __name__ == "__main__": unittest.main()

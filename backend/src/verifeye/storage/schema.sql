@@ -11,6 +11,7 @@ INSERT OR IGNORE INTO schema_version(version) VALUES (3);
 INSERT OR IGNORE INTO schema_version(version) VALUES (4);
 INSERT OR IGNORE INTO schema_version(version) VALUES (5);
 INSERT OR IGNORE INTO schema_version(version) VALUES (6);
+INSERT OR IGNORE INTO schema_version(version) VALUES (7);
 
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
@@ -201,3 +202,57 @@ CREATE TABLE IF NOT EXISTS camera_event_tokens (
 
 CREATE INDEX IF NOT EXISTS ix_camera_event_tokens_camera
     ON camera_event_tokens(camera_id, revoked_at);
+
+CREATE TABLE IF NOT EXISTS notification_rules (
+    id INTEGER PRIMARY KEY,
+    identity_id INTEGER UNIQUE REFERENCES identities(id) ON DELETE CASCADE,
+    is_fallback INTEGER NOT NULL DEFAULT 0 CHECK (is_fallback IN (0, 1)),
+    email_address TEXT,
+    phone_number TEXT,
+    email_enabled INTEGER NOT NULL DEFAULT 0 CHECK (email_enabled IN (0, 1)),
+    sms_enabled INTEGER NOT NULL DEFAULT 0 CHECK (sms_enabled IN (0, 1)),
+    outcomes_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(outcomes_json)),
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK ((is_fallback = 1 AND identity_id IS NULL) OR (is_fallback = 0 AND identity_id IS NOT NULL))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_notification_rules_fallback
+    ON notification_rules(is_fallback) WHERE is_fallback = 1;
+
+CREATE TABLE IF NOT EXISTS notification_rule_cameras (
+    rule_id INTEGER NOT NULL REFERENCES notification_rules(id) ON DELETE CASCADE,
+    camera_id INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+    PRIMARY KEY(rule_id, camera_id)
+);
+
+CREATE TABLE IF NOT EXISTS notification_deliveries (
+    id INTEGER PRIMARY KEY,
+    event_id INTEGER REFERENCES camera_events(id) ON DELETE SET NULL,
+    rule_id INTEGER REFERENCES notification_rules(id) ON DELETE SET NULL,
+    channel TEXT NOT NULL CHECK (channel IN ('email', 'sms')),
+    destination TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued'
+        CHECK (status IN ('queued', 'claimed', 'retrying', 'sent', 'failed')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    available_at TEXT NOT NULL,
+    lease_owner TEXT,
+    lease_expires_at TEXT,
+    outcome TEXT NOT NULL,
+    camera_name TEXT,
+    identity_name TEXT,
+    occurred_at TEXT,
+    event_link TEXT,
+    screenshot_id INTEGER,
+    is_test INTEGER NOT NULL DEFAULT 0 CHECK (is_test IN (0, 1)),
+    provider_message_id TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_notification_delivery_event_rule_channel
+    ON notification_deliveries(event_id, rule_id, channel) WHERE event_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_notification_delivery_work
+    ON notification_deliveries(status, available_at, lease_expires_at);

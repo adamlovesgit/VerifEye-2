@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
+import logging
 from pathlib import Path
 import secrets
 import sqlite3
@@ -18,6 +19,7 @@ import uuid
 
 
 UTC = timezone.utc
+logger = logging.getLogger(__name__)
 TERMINAL_SESSION_STATES = {"completed", "failed", "interrupted", "cancelled"}
 
 
@@ -521,6 +523,45 @@ class EventRepository:
         with self.connect() as connection:
             return {row["relative_path"] for row in connection.execute("SELECT relative_path FROM screenshots")}
 
+    def prune_motion_events(self, no_face_days: int, unrecognized_days: int) -> int:
+        """Delete terminal ONVIF motion events according to their strongest outcome."""
+        no_face_cutoff = iso(utcnow() - timedelta(days=no_face_days))
+        unrecognized_cutoff = iso(utcnow() - timedelta(days=unrecognized_days))
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """DELETE FROM camera_events AS e
+                   WHERE e.event_type = 'onvif_motion'
+                     AND e.state IN ('completed', 'failed')
+                     AND NOT EXISTS (
+                         SELECT 1 FROM recognition_session_events l
+                         JOIN recognition_results r ON r.session_id = l.session_id
+                         WHERE l.event_id = e.id AND r.outcome = 'recognized'
+                     )
+                     AND (
+                         (e.accepted_at < ? AND EXISTS (
+                             SELECT 1 FROM recognition_session_events l
+                             JOIN recognition_results r ON r.session_id = l.session_id
+                             WHERE l.event_id = e.id AND r.outcome = 'unrecognized_face'
+                         ))
+                         OR
+                         (e.accepted_at < ? AND NOT EXISTS (
+                             SELECT 1 FROM recognition_session_events l
+                             JOIN recognition_results r ON r.session_id = l.session_id
+                             WHERE l.event_id = e.id AND r.outcome = 'unrecognized_face'
+                         ))
+                     )""",
+                (unrecognized_cutoff, no_face_cutoff),
+            )
+            connection.execute(
+                """DELETE FROM recognition_sessions
+                   WHERE state IN ('completed', 'failed', 'interrupted', 'cancelled')
+                     AND NOT EXISTS (
+                         SELECT 1 FROM recognition_session_events l
+                         WHERE l.session_id = recognition_sessions.id
+                     )"""
+            )
+        return cursor.rowcount
+
 
 class ScreenshotStorage:
     EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
@@ -570,12 +611,16 @@ class EventDispatcher:
     def __init__(
         self, repository: EventRepository, manager, pre_roll: float, window: float, maximum: float,
         lease_seconds: float = 30, max_attempts: int = 5, poll_seconds: float = .25,
-        screenshot_storage: ScreenshotStorage | None = None,
+        screenshot_storage: ScreenshotStorage | None = None, no_face_retention_days: int = 7,
+        unrecognized_retention_days: int = 30, retention_interval_seconds: float = 3600,
     ):
         self.repository, self.manager = repository, manager
         self.pre_roll, self.window, self.maximum = pre_roll, window, maximum
         self.lease_seconds, self.max_attempts, self.poll_seconds = lease_seconds, max_attempts, poll_seconds
         self.screenshot_storage = screenshot_storage
+        self.no_face_retention_days, self.unrecognized_retention_days = no_face_retention_days, unrecognized_retention_days
+        self.retention_interval_seconds = retention_interval_seconds
+        self._next_retention_at = 0.0
         self.owner = uuid.uuid4().hex
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -591,6 +636,17 @@ class EventDispatcher:
 
     def _run(self) -> None:
         while not self._stop.is_set():
+            if time.monotonic() >= self._next_retention_at:
+                try:
+                    self.repository.prune_motion_events(
+                        self.no_face_retention_days, self.unrecognized_retention_days
+                    )
+                    if self.screenshot_storage:
+                        self.screenshot_storage.cleanup_orphans(self.repository.referenced_paths())
+                except Exception:
+                    logger.exception("Motion-event retention cleanup failed.")
+                finally:
+                    self._next_retention_at = time.monotonic() + self.retention_interval_seconds
             row = self.repository.claim_dispatch(self.owner, self.lease_seconds)
             if row is None:
                 self._stop.wait(self.poll_seconds)
@@ -636,6 +692,13 @@ class EventDispatcher:
         self.repository.transition_session(
             session_id, state, stream_mode=stream_mode, error_code=code, error_message=error
         )
+        if state in TERMINAL_SESSION_STATES:
+            notifier = getattr(self, "notification_callback", None)
+            if notifier:
+                try:
+                    notifier(session_id)
+                except Exception:
+                    logger.exception("Notification planning failed for recognition session %s.", session_id)
 
     def _results(self, session_id: int, results: list[dict[str, Any]]) -> None:
         finalized = []

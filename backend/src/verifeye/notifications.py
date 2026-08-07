@@ -1,0 +1,340 @@
+"""Durable notification rules, planning, and SMTP/Twilio delivery."""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import timedelta
+from email.message import EmailMessage
+from email.utils import make_msgid
+import html
+import json
+import re
+import smtplib
+import sqlite3
+import ssl
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from pathlib import Path
+from typing import Any
+
+from .events import configure_connection, iso, parse_utc, utcnow
+
+
+OUTCOMES = {"recognized", "unrecognized_face", "no_face", "processing_error"}
+FALLBACK_OUTCOMES = {"unrecognized_face", "no_face", "processing_error"}
+EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+PHONE_RE = re.compile(r"^\+[1-9]\d{7,14}$")
+
+
+class NotificationError(ValueError):
+    pass
+
+
+class PermanentDeliveryError(RuntimeError):
+    pass
+
+
+def validate_email(value: str | None) -> str | None:
+    value = value.strip() if value else None
+    if value and not EMAIL_RE.fullmatch(value):
+        raise NotificationError("Enter a valid email address.")
+    return value
+
+
+def validate_phone(value: str | None) -> str | None:
+    value = re.sub(r"[\s()-]", "", value or "") or None
+    if value and not PHONE_RE.fullmatch(value):
+        raise NotificationError("Enter a phone number in E.164 format, such as +15551234567.")
+    return value
+
+
+@dataclass(frozen=True)
+class ProviderSettings:
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_sender: str = ""
+    smtp_tls_mode: str = "starttls"
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_from_number: str = ""
+    public_base_url: str = "http://127.0.0.1:8000"
+
+    @property
+    def email_ready(self) -> bool:
+        return bool(self.smtp_host and self.smtp_sender and self.smtp_tls_mode in {"starttls", "ssl", "none"})
+
+    @property
+    def sms_ready(self) -> bool:
+        return bool(self.twilio_account_sid and self.twilio_auth_token and self.twilio_from_number)
+
+
+class NotificationRepository:
+    def __init__(self, database: str | Path, busy_timeout_ms: int = 5000):
+        self.database, self.busy_timeout_ms = Path(database), busy_timeout_ms
+
+    @contextmanager
+    def connect(self):
+        connection = sqlite3.connect(str(self.database), timeout=self.busy_timeout_ms / 1000)
+        connection.row_factory = sqlite3.Row
+        configure_connection(connection, self.busy_timeout_ms)
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
+    def settings(self) -> dict[str, Any]:
+        with self.connect() as connection:
+            identities = [dict(row) for row in connection.execute(
+                "SELECT id, display_name AS displayName FROM identities ORDER BY display_name COLLATE NOCASE")]
+            cameras = [dict(row) for row in connection.execute(
+                "SELECT id, name FROM cameras ORDER BY name COLLATE NOCASE")]
+            rows = connection.execute(
+                """SELECT r.*, i.display_name AS identity_name FROM notification_rules r
+                   LEFT JOIN identities i ON i.id = r.identity_id ORDER BY r.is_fallback DESC, i.display_name""").fetchall()
+            camera_rows = connection.execute("SELECT rule_id, camera_id FROM notification_rule_cameras").fetchall()
+        by_rule: dict[int, list[int]] = {}
+        for row in camera_rows:
+            by_rule.setdefault(row["rule_id"], []).append(row["camera_id"])
+        return {"rules": [self._rule_json(row, by_rule.get(row["id"], [])) for row in rows],
+                "identities": identities, "cameras": cameras, "outcomes": sorted(OUTCOMES)}
+
+    @staticmethod
+    def _rule_json(row, cameras):
+        return {"id": row["id"], "identityId": row["identity_id"], "identityName": row["identity_name"],
+                "isFallback": bool(row["is_fallback"]), "emailAddress": row["email_address"] or "",
+                "phoneNumber": row["phone_number"] or "", "emailEnabled": bool(row["email_enabled"]),
+                "smsEnabled": bool(row["sms_enabled"]), "outcomes": json.loads(row["outcomes_json"]),
+                "cameraIds": sorted(cameras), "version": row["version"]}
+
+    def save_rule(self, payload: dict[str, Any], rule_id: int | None = None) -> int:
+        identity_id = payload.get("identityId")
+        fallback = bool(payload.get("isFallback", False))
+        if fallback == (identity_id is not None):
+            raise NotificationError("Choose either the system fallback or one identity.")
+        email, phone = validate_email(payload.get("emailAddress")), validate_phone(payload.get("phoneNumber"))
+        email_enabled, sms_enabled = bool(payload.get("emailEnabled")), bool(payload.get("smsEnabled"))
+        if email_enabled and not email: raise NotificationError("An email address is required when email is enabled.")
+        if sms_enabled and not phone: raise NotificationError("A phone number is required when SMS is enabled.")
+        outcomes = set(payload.get("outcomes") or [])
+        allowed = FALLBACK_OUTCOMES if fallback else {"recognized"}
+        if not outcomes or not outcomes <= allowed:
+            raise NotificationError(f"Choose valid outcomes: {', '.join(sorted(allowed))}.")
+        camera_ids = {int(value) for value in payload.get("cameraIds") or []}
+        now = iso(utcnow())
+        try:
+            with self.connect() as connection:
+                if identity_id is not None and connection.execute("SELECT 1 FROM identities WHERE id=?", (identity_id,)).fetchone() is None:
+                    raise NotificationError("Identity not found.")
+                if camera_ids:
+                    found = {r[0] for r in connection.execute(
+                        f"SELECT id FROM cameras WHERE id IN ({','.join('?' for _ in camera_ids)})", tuple(camera_ids))}
+                    if found != camera_ids: raise NotificationError("One or more cameras were not found.")
+                if rule_id is None:
+                    cursor = connection.execute(
+                        """INSERT INTO notification_rules(identity_id,is_fallback,email_address,phone_number,
+                           email_enabled,sms_enabled,outcomes_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)""",
+                        (identity_id, int(fallback), email, phone, int(email_enabled), int(sms_enabled),
+                         json.dumps(sorted(outcomes)), now, now))
+                    rule_id = int(cursor.lastrowid)
+                else:
+                    version = int(payload.get("version") or 0)
+                    cursor = connection.execute(
+                        """UPDATE notification_rules SET identity_id=?,is_fallback=?,email_address=?,phone_number=?,
+                           email_enabled=?,sms_enabled=?,outcomes_json=?,version=version+1,updated_at=?
+                           WHERE id=? AND version=?""",
+                        (identity_id, int(fallback), email, phone, int(email_enabled), int(sms_enabled),
+                         json.dumps(sorted(outcomes)), now, rule_id, version))
+                    if cursor.rowcount != 1: raise NotificationError("This rule changed elsewhere. Refresh and try again.")
+                    connection.execute("DELETE FROM notification_rule_cameras WHERE rule_id=?", (rule_id,))
+                connection.executemany("INSERT INTO notification_rule_cameras(rule_id,camera_id) VALUES(?,?)",
+                                       [(rule_id, camera_id) for camera_id in camera_ids])
+        except sqlite3.IntegrityError as exc:
+            raise NotificationError("A rule already exists for this identity or fallback.") from exc
+        return rule_id
+
+    def delete_rule(self, rule_id: int) -> bool:
+        with self.connect() as connection:
+            return connection.execute("DELETE FROM notification_rules WHERE id=?", (rule_id,)).rowcount == 1
+
+    def enqueue_session(self, session_id: int, base_url: str) -> int:
+        count, now = 0, iso(utcnow())
+        with self.connect() as connection:
+            events = connection.execute(
+                """SELECT e.id,e.camera_id,e.occurred_at,c.name camera_name FROM camera_events e
+                   JOIN cameras c ON c.id=e.camera_id JOIN recognition_session_events l ON l.event_id=e.id
+                   WHERE l.session_id=? AND e.state IN ('completed','failed')""", (session_id,)).fetchall()
+            for event in events:
+                results = connection.execute(
+                    """SELECT r.*,i.display_name identity_name FROM recognition_results r
+                       LEFT JOIN identities i ON i.id=r.identity_id JOIN recognition_session_events l ON l.session_id=r.session_id
+                       WHERE l.event_id=? AND (r.capture_timestamp BETWEEN l.attribution_start AND l.attribution_end
+                       OR r.outcome IN ('no_face','processing_error'))""", (event["id"],)).fetchall()
+                identities = {r["identity_id"]: r["identity_name"] for r in results if r["outcome"] == "recognized" and r["identity_id"]}
+                fallback = next((name for name in ("processing_error", "unrecognized_face", "no_face")
+                                 if any(r["outcome"] == name for r in results)), None)
+                matches = [(identity_id, "recognized", name) for identity_id, name in identities.items()]
+                if fallback: matches.append((None, fallback, None))
+                for identity_id, outcome, identity_name in matches:
+                    rules = connection.execute(
+                        """SELECT r.* FROM notification_rules r WHERE
+                           ((? IS NULL AND r.is_fallback=1) OR r.identity_id=?)
+                           AND EXISTS(SELECT 1 FROM json_each(r.outcomes_json) WHERE value=?)
+                           AND (NOT EXISTS(SELECT 1 FROM notification_rule_cameras rc WHERE rc.rule_id=r.id)
+                                OR EXISTS(SELECT 1 FROM notification_rule_cameras rc WHERE rc.rule_id=r.id AND rc.camera_id=?))""",
+                        (identity_id, identity_id, outcome, event["camera_id"])).fetchall()
+                    screenshot = connection.execute(
+                        """SELECT s.id FROM screenshots s LEFT JOIN recognition_results r ON r.id=s.result_id
+                           WHERE s.event_id=? OR (r.session_id=? AND r.identity_id IS ?)
+                           ORDER BY CASE s.role WHEN 'face_crop' THEN 0 ELSE 1 END,s.id LIMIT 1""",
+                        (event["id"], session_id, identity_id)).fetchone()
+                    for rule in rules:
+                        for channel, enabled, destination in (("email", rule["email_enabled"], rule["email_address"]),
+                                                              ("sms", rule["sms_enabled"], rule["phone_number"])):
+                            if not enabled or not destination: continue
+                            cursor = connection.execute(
+                                """INSERT OR IGNORE INTO notification_deliveries(event_id,rule_id,channel,destination,
+                                   available_at,outcome,camera_name,identity_name,occurred_at,event_link,screenshot_id,
+                                   created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                (event["id"], rule["id"], channel, destination, now, outcome, event["camera_name"],
+                                 identity_name, event["occurred_at"], f"{base_url.rstrip('/')}/?event={event['id']}",
+                                 screenshot["id"] if screenshot else None, now, now))
+                            count += cursor.rowcount
+        return count
+
+    def reconcile(self, base_url: str) -> None:
+        with self.connect() as connection:
+            sessions = [row[0] for row in connection.execute(
+                "SELECT id FROM recognition_sessions WHERE state IN ('completed','failed')")]
+        for session_id in sessions: self.enqueue_session(session_id, base_url)
+
+    def enqueue_test(self, rule_id: int, channel: str, base_url: str) -> int:
+        if channel not in {"email", "sms"}: raise NotificationError("Channel must be email or SMS.")
+        now = iso(utcnow())
+        with self.connect() as connection:
+            rule = connection.execute("SELECT * FROM notification_rules WHERE id=?", (rule_id,)).fetchone()
+            if not rule: raise NotificationError("Notification rule not found.")
+            destination = rule["email_address" if channel == "email" else "phone_number"]
+            if not destination: raise NotificationError(f"Configure a destination before testing {channel}.")
+            cursor = connection.execute(
+                """INSERT INTO notification_deliveries(rule_id,channel,destination,available_at,outcome,camera_name,
+                   identity_name,occurred_at,event_link,is_test,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,1,?,?)""",
+                (rule_id, channel, destination, now, "test", "VerifEye test", None, now,
+                 base_url.rstrip("/"), now, now))
+        return int(cursor.lastrowid)
+
+    def claim(self, owner: str, lease_seconds: float):
+        now_dt, now = utcnow(), iso(utcnow())
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("""UPDATE notification_deliveries SET status='retrying',lease_owner=NULL,
+                lease_expires_at=NULL,available_at=?,updated_at=? WHERE status='claimed' AND lease_expires_at<?""", (now, now, now))
+            row = connection.execute("""SELECT id FROM notification_deliveries WHERE status IN ('queued','retrying')
+                AND available_at<=? ORDER BY available_at,id LIMIT 1""", (now,)).fetchone()
+            if not row: connection.commit(); return None
+            connection.execute("""UPDATE notification_deliveries SET status='claimed',attempts=attempts+1,
+                lease_owner=?,lease_expires_at=?,updated_at=? WHERE id=?""",
+                (owner, iso(now_dt + timedelta(seconds=lease_seconds)), now, row["id"]))
+            claimed = connection.execute("SELECT * FROM notification_deliveries WHERE id=?", (row["id"],)).fetchone()
+            connection.commit(); return claimed
+
+    def sent(self, delivery_id: int, message_id: str | None):
+        with self.connect() as connection: connection.execute(
+            """UPDATE notification_deliveries SET status='sent',provider_message_id=?,lease_owner=NULL,
+               lease_expires_at=NULL,last_error=NULL,updated_at=? WHERE id=?""", (message_id, iso(utcnow()), delivery_id))
+
+    def failed(self, row, error: str, permanent: bool, max_attempts: int):
+        terminal = permanent or row["attempts"] >= max_attempts
+        delay = min(300, 2 ** max(1, row["attempts"]))
+        with self.connect() as connection: connection.execute(
+            """UPDATE notification_deliveries SET status=?,available_at=?,lease_owner=NULL,lease_expires_at=NULL,
+               last_error=?,updated_at=? WHERE id=?""",
+            ("failed" if terminal else "retrying", iso(utcnow() + timedelta(seconds=delay)), str(error)[:500], iso(utcnow()), row["id"]))
+
+    def deliveries(self, limit=50, offset=0, status=None, channel=None):
+        clauses, args = [], []
+        if status: clauses.append("status=?"); args.append(status)
+        if channel: clauses.append("channel=?"); args.append(channel)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.connect() as connection:
+            rows = connection.execute(f"SELECT * FROM notification_deliveries{where} ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
+        return [{"id":r["id"],"channel":r["channel"],"destination":r["destination"],"status":r["status"],
+                 "attempts":r["attempts"],"outcome":r["outcome"],"cameraName":r["camera_name"],
+                 "identityName":r["identity_name"],"occurredAt":r["occurred_at"],"isTest":bool(r["is_test"]),
+                 "lastError":r["last_error"],"createdAt":r["created_at"]} for r in rows]
+
+    def screenshot(self, screenshot_id: int | None):
+        if not screenshot_id: return None
+        with self.connect() as connection:
+            return connection.execute("SELECT relative_path,media_type FROM screenshots WHERE id=?", (screenshot_id,)).fetchone()
+
+
+class NotificationWorker:
+    def __init__(self, repository: NotificationRepository, providers: ProviderSettings, screenshot_root: Path,
+                 lease_seconds=30, max_attempts=5, poll_seconds=.5):
+        self.repository, self.providers, self.screenshot_root = repository, providers, screenshot_root
+        self.lease_seconds, self.max_attempts, self.poll_seconds = lease_seconds, max_attempts, poll_seconds
+        self.owner, self._stop, self._thread = uuid.uuid4().hex, threading.Event(), None
+
+    def start(self):
+        self.repository.reconcile(self.providers.public_base_url)
+        self._thread = threading.Thread(target=self._run, name="notification-worker", daemon=True); self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread: self._thread.join(5)
+
+    def _run(self):
+        while not self._stop.is_set():
+            row = self.repository.claim(self.owner, self.lease_seconds)
+            if not row: self._stop.wait(self.poll_seconds); continue
+            try:
+                message_id = self._send(row); self.repository.sent(row["id"], message_id)
+            except Exception as exc:
+                self.repository.failed(row, exc, isinstance(exc, PermanentDeliveryError), self.max_attempts)
+
+    def _body(self, row):
+        title = "VerifEye test notification" if row["is_test"] else f"VerifEye: {row['outcome'].replace('_',' ')}"
+        details = [title, f"Camera: {row['camera_name'] or '—'}", f"Time: {row['occurred_at'] or '—'}"]
+        if row["identity_name"]: details.append(f"Identity: {row['identity_name']}")
+        if row["event_link"]: details.append(f"View event: {row['event_link']}")
+        return title, "\n".join(details)
+
+    def _send(self, row):
+        title, body = self._body(row)
+        if row["channel"] == "email":
+            if not self.providers.email_ready: raise PermanentDeliveryError("SMTP provider is not configured.")
+            message = EmailMessage(); message["Subject"] = title; message["From"] = self.providers.smtp_sender
+            message["To"] = row["destination"]; message.set_content(body)
+            cid, image_html = None, ""
+            shot = self.repository.screenshot(row["screenshot_id"])
+            image = self.screenshot_root / shot["relative_path"] if shot else None
+            if image and image.is_file(): cid = make_msgid(); image_html = f'<p><img src="cid:{cid[1:-1]}" alt="Event capture" style="max-width:100%"></p>'
+            message.add_alternative(f"<html><body><p>{html.escape(body).replace(chr(10), '<br>')}</p>{image_html}</body></html>", subtype="html")
+            if cid:
+                subtype = shot["media_type"].split("/",1)[1]; message.get_payload()[1].add_related(image.read_bytes(), maintype="image", subtype=subtype, cid=cid)
+            context = ssl.create_default_context()
+            if self.providers.smtp_tls_mode == "ssl": server = smtplib.SMTP_SSL(self.providers.smtp_host, self.providers.smtp_port, timeout=15, context=context)
+            else: server = smtplib.SMTP(self.providers.smtp_host, self.providers.smtp_port, timeout=15)
+            with server:
+                if self.providers.smtp_tls_mode == "starttls": server.starttls(context=context)
+                if self.providers.smtp_username: server.login(self.providers.smtp_username, self.providers.smtp_password)
+                server.send_message(message)
+            return message["Message-ID"]
+        if not self.providers.sms_ready: raise PermanentDeliveryError("Twilio provider is not configured.")
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{urllib.parse.quote(self.providers.twilio_account_sid)}/Messages.json"
+        data = urllib.parse.urlencode({"To":row["destination"],"From":self.providers.twilio_from_number,"Body":body}).encode()
+        request = urllib.request.Request(url, data=data); token = __import__("base64").b64encode(f"{self.providers.twilio_account_sid}:{self.providers.twilio_auth_token}".encode()).decode()
+        request.add_header("Authorization", f"Basic {token}")
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response: return json.loads(response.read()).get("sid")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")[:300]
+            if 400 <= exc.code < 500 and exc.code != 429: raise PermanentDeliveryError(f"Twilio rejected the message ({exc.code}): {detail}") from exc
+            raise RuntimeError(f"Twilio request failed ({exc.code}).") from exc

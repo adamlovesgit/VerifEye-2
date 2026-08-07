@@ -17,12 +17,13 @@
   <link rel="stylesheet" href="/assets/cameras.css?v=onvif-import-1">
   <link rel="stylesheet" href="/assets/onvif.css?v=onvif-import-1">
   <link rel="stylesheet" href="/assets/events.css?v=phase2-events-2">
-  <script src="/assets/app.js?v=onvif-import-2" defer></script>
+  <link rel="stylesheet" href="/assets/notifications.css?v=notifications-3">
+  <script src="/assets/app.js?v=notifications-3" defer></script>
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="/" aria-label="VerifEye home"><span class="mark" aria-hidden="true"></span>VerifEye</a>
-    <div class="topbar-actions"><div id="app-nav" class="app-nav hidden"><button class="nav-link active" data-page="dashboard">Dashboard</button><button class="nav-link" data-page="events">Events</button><button class="nav-link" data-page="identities">Identities</button><button id="logout" class="ghost">Sign out</button></div><div id="privacy-badge" class="privacy"><span></span> Local & private</div><button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false"><span class="theme-icon" aria-hidden="true">☾</span><span class="theme-label">Dark</span></button></div>
+    <div class="topbar-actions"><div id="app-nav" class="app-nav hidden"><button class="nav-link active" data-page="dashboard">Dashboard</button><button class="nav-link" data-page="events">Events</button><button class="nav-link" data-page="identities">Identities</button><button class="nav-link" data-page="notifications">Notifications</button><button id="logout" class="ghost">Sign out</button></div><div id="privacy-badge" class="privacy"><span></span> Local & private</div><button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false"><span class="theme-icon" aria-hidden="true">☾</span><span class="theme-label">Dark</span></button></div>
   </header>
 
   <main>
@@ -82,6 +83,19 @@
         </div>
         <div class="identity-toolbar"><div><strong id="identity-count">0 identities</strong><span>Stored only on this server</span></div><button id="refresh-identities" class="ghost">Refresh</button></div>
         <p id="identity-error" class="error" role="alert"></p><div id="identity-list" class="identity-list"><p class="empty">No identities enrolled.</p></div>
+      </section>
+      <section id="notifications-page" class="app-page hidden">
+        <div class="dashboard-head"><div><p class="eyebrow">Outbound alerts</p><h1>Notifications.</h1><p>Route completed recognition events through email and SMS.</p></div><button id="refresh-notifications" class="ghost">Refresh</button></div>
+        <div id="provider-status" class="provider-grid"></div>
+        <div class="notification-toolbar"><div><strong>Alert rules</strong><span>New channels remain off until you enable them</span></div><button id="add-notification-rule" class="ghost">Add rule</button></div>
+        <div id="new-notification-rule" class="new-rule-panel hidden">
+          <label>Rule target<select id="new-rule-target"></select></label>
+          <div><button id="cancel-notification-rule" class="ghost" type="button">Cancel</button><button id="create-notification-rule" class="ghost" type="button">Create rule</button></div>
+        </div>
+        <p id="notification-error" class="error" role="alert"></p>
+        <div id="notification-rules" class="notification-rules"><p class="empty">No notification rules configured.</p></div>
+        <div class="notification-toolbar"><div><strong>Delivery history</strong><span>Most recent attempts first</span></div><div class="delivery-filters"><select id="delivery-channel"><option value="">All channels</option><option value="email">Email</option><option value="sms">SMS</option></select><select id="delivery-status"><option value="">All statuses</option><option value="queued">Queued</option><option value="retrying">Retrying</option><option value="sent">Sent</option><option value="failed">Failed</option></select></div></div>
+        <div id="notification-deliveries" class="delivery-list"><p class="empty">No deliveries yet.</p></div>
       </section>
     </section>
   </main>
