@@ -102,7 +102,32 @@ Then open `http://127.0.0.1:8000`. The recognition model defaults to
 `VERIFEYE_MODEL_PATH` before starting the server if it is stored elsewhere.
 
 Uploaded enrollment photos stay under `backend/data/enrollments`; the image
-and its normalized embedding are never sent to a cloud service.
+and its normalized embedding are never sent to a cloud service. Cameras,
+identities, events, recognition results, and notification settings belong to
+the installation and are shared by all authenticated accounts.
+
+## Resetting local data after schema changes
+
+VerifEye supports only the fresh database layout in
+`backend/src/verifeye/storage/schema.sql`; startup does not migrate or inspect
+older development schemas. Before starting this version against existing local
+development data, stop VerifEye and rename the data directory so the reset is
+recoverable:
+
+```powershell
+Rename-Item -LiteralPath backend\data -NewName "data-backup-$(Get-Date -Format yyyyMMdd-HHmmss)"
+```
+
+Start VerifEye normally to create a new `backend/data` directory and database.
+Keep the renamed directory until the reset has been verified; VerifEye never
+deletes or converts it automatically.
+
+For custom locations, back up or rename each configured path instead. The
+corresponding settings are `VERIFEYE_DATABASE` for the SQLite file,
+`VERIFEYE_UPLOAD_DIR` for enrollment images,
+`VERIFEYE_EVENT_SCREENSHOT_DIR` for event images, and
+`VERIFEYE_MEDIAMTX_RUNTIME_DIR` for MediaMTX runtime files. Point all four at
+fresh locations before startup when performing a full reset.
 
 ## Live camera media and recognition
 
@@ -200,7 +225,10 @@ python backend/tests/integration/mediamtx_multi_browser.py --camera-id 1 --token
 
 ## Email and SMS notifications
 
-The Notifications page stores per-identity and fallback alert rules locally. Provider
+The Notifications page stores per-identity rules plus three independent session-level
+rules locally: unknown face (a detected face is not enrolled), no face (the entire
+session contains no face detections), and system fallback (processing errors). Each
+session-level rule queues at most one notification per completed recognition session. Provider
 credentials are read only from the server environment and are never returned by the API.
 Configure SMTP with `VERIFEYE_SMTP_HOST`, `VERIFEYE_SMTP_PORT`,
 `VERIFEYE_SMTP_USERNAME`, `VERIFEYE_SMTP_PASSWORD`, `VERIFEYE_SMTP_SENDER`, and

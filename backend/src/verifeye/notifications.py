@@ -24,8 +24,12 @@ from typing import Any
 from .events import configure_connection, iso, parse_utc, utcnow
 
 
-OUTCOMES = {"recognized", "unrecognized_face", "no_face", "processing_error"}
-FALLBACK_OUTCOMES = {"unrecognized_face", "no_face", "processing_error"}
+RULE_OUTCOMES = {
+    "identity": "recognized",
+    "unknown_face": "unrecognized_face",
+    "no_face": "no_face",
+    "system_error": "processing_error",
+}
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 PHONE_RE = re.compile(r"^\+[1-9]\d{7,14}$")
 
@@ -77,16 +81,6 @@ class ProviderSettings:
 class NotificationRepository:
     def __init__(self, database: str | Path, busy_timeout_ms: int = 5000):
         self.database, self.busy_timeout_ms = Path(database), busy_timeout_ms
-        connection = sqlite3.connect(str(self.database))
-        try:
-            rule_columns = {row[1] for row in connection.execute("PRAGMA table_info(notification_rules)")}
-            delivery_columns = {row[1] for row in connection.execute("PRAGMA table_info(notification_deliveries)")}
-            event_columns = {row[1] for row in connection.execute("PRAGMA table_info(camera_events)")}
-        finally:
-            connection.close()
-        self.has_rule_user_id = "user_id" in rule_columns
-        self.has_delivery_user_id = "user_id" in delivery_columns
-        self.has_event_user_id = "user_id" in event_columns
 
     @contextmanager
     def connect(self):
@@ -99,150 +93,146 @@ class NotificationRepository:
         finally:
             connection.close()
 
-    def settings(self, user_id: int | None = None) -> dict[str, Any]:
-        if self.has_rule_user_id and user_id is None: raise NotificationError("An authenticated owner is required.")
-        owner_where = " WHERE user_id=?" if self.has_rule_user_id else ""
-        owner_args = (user_id,) if self.has_rule_user_id else ()
+    def settings(self) -> dict[str, Any]:
         with self.connect() as connection:
             identities = [dict(row) for row in connection.execute(
-                "SELECT id, display_name AS displayName FROM identities" + owner_where +
-                " ORDER BY display_name COLLATE NOCASE", owner_args)]
+                "SELECT id, display_name AS displayName FROM identities ORDER BY display_name COLLATE NOCASE")]
             cameras = [dict(row) for row in connection.execute(
-                "SELECT id, name FROM cameras" + owner_where + " ORDER BY name COLLATE NOCASE", owner_args)]
+                "SELECT id, name FROM cameras ORDER BY name COLLATE NOCASE")]
             rows = connection.execute(
                 """SELECT r.*, i.display_name AS identity_name FROM notification_rules r
-                   LEFT JOIN identities i ON i.id = r.identity_id""" +
-                (" WHERE r.user_id=?" if self.has_rule_user_id else "") +
-                " ORDER BY r.is_fallback DESC, i.display_name", owner_args).fetchall()
+                   LEFT JOIN identities i ON i.id = r.identity_id
+                   ORDER BY CASE r.rule_type
+                     WHEN 'unknown_face' THEN 0 WHEN 'no_face' THEN 1
+                     WHEN 'system_error' THEN 2 ELSE 3 END,
+                     i.display_name COLLATE NOCASE""").fetchall()
             camera_rows = connection.execute(
                 """SELECT rc.rule_id,rc.camera_id FROM notification_rule_cameras rc
-                   JOIN notification_rules r ON r.id=rc.rule_id""" +
-                (" WHERE r.user_id=?" if self.has_rule_user_id else ""), owner_args).fetchall()
+                   JOIN notification_rules r ON r.id=rc.rule_id""").fetchall()
         by_rule: dict[int, list[int]] = {}
         for row in camera_rows:
             by_rule.setdefault(row["rule_id"], []).append(row["camera_id"])
         return {"rules": [self._rule_json(row, by_rule.get(row["id"], [])) for row in rows],
-                "identities": identities, "cameras": cameras, "outcomes": sorted(OUTCOMES)}
+                "identities": identities, "cameras": cameras}
 
     @staticmethod
     def _rule_json(row, cameras):
         return {"id": row["id"], "identityId": row["identity_id"], "identityName": row["identity_name"],
-                "isFallback": bool(row["is_fallback"]), "emailAddress": row["email_address"] or "",
+                "ruleType": row["rule_type"], "emailAddress": row["email_address"] or "",
                 "phoneNumber": row["phone_number"] or "", "emailEnabled": bool(row["email_enabled"]),
-                "smsEnabled": bool(row["sms_enabled"]), "outcomes": json.loads(row["outcomes_json"]),
-                "cameraIds": sorted(cameras), "version": row["version"]}
+                "smsEnabled": bool(row["sms_enabled"]), "cameraIds": sorted(cameras),
+                "version": row["version"]}
 
-    def save_rule(self, payload: dict[str, Any], rule_id: int | None = None,
-                  user_id: int | None = None) -> int:
-        if self.has_rule_user_id and user_id is None: raise NotificationError("An authenticated owner is required.")
+    def save_rule(self, payload: dict[str, Any], rule_id: int | None = None) -> int:
         identity_id = payload.get("identityId")
-        fallback = bool(payload.get("isFallback", False))
-        if fallback == (identity_id is not None):
-            raise NotificationError("Choose either the system fallback or one identity.")
+        rule_type = payload.get("ruleType")
+        if rule_type not in RULE_OUTCOMES: raise NotificationError("Choose a valid rule type.")
+        if (rule_type == "identity") != (identity_id is not None):
+            raise NotificationError("Choose either a session-level rule or one identity.")
         email, phone = validate_email(payload.get("emailAddress")), validate_phone(payload.get("phoneNumber"))
         email_enabled, sms_enabled = bool(payload.get("emailEnabled")), bool(payload.get("smsEnabled"))
         if email_enabled and not email: raise NotificationError("An email address is required when email is enabled.")
         if sms_enabled and not phone: raise NotificationError("A phone number is required when SMS is enabled.")
-        outcomes = set(payload.get("outcomes") or [])
-        allowed = FALLBACK_OUTCOMES if fallback else {"recognized"}
-        if not outcomes or not outcomes <= allowed:
-            raise NotificationError(f"Choose valid outcomes: {', '.join(sorted(allowed))}.")
         camera_ids = {int(value) for value in payload.get("cameraIds") or []}
         now = iso(utcnow())
         try:
             with self.connect() as connection:
-                identity_query = "SELECT 1 FROM identities WHERE id=?" + (" AND user_id=?" if self.has_rule_user_id else "")
-                identity_args = (identity_id, user_id) if self.has_rule_user_id else (identity_id,)
-                if identity_id is not None and connection.execute(identity_query, identity_args).fetchone() is None:
+                if identity_id is not None and connection.execute(
+                        "SELECT 1 FROM identities WHERE id=?", (identity_id,)).fetchone() is None:
                     raise NotificationError("Identity not found.")
                 if camera_ids:
-                    camera_owner = " AND user_id=?" if self.has_rule_user_id else ""
-                    camera_args = (*tuple(camera_ids), user_id) if self.has_rule_user_id else tuple(camera_ids)
                     found = {r[0] for r in connection.execute(
-                        f"SELECT id FROM cameras WHERE id IN ({','.join('?' for _ in camera_ids)}){camera_owner}", camera_args)}
+                        f"SELECT id FROM cameras WHERE id IN ({','.join('?' for _ in camera_ids)})", tuple(camera_ids))}
                     if found != camera_ids: raise NotificationError("One or more cameras were not found.")
                 if rule_id is None:
-                    columns = """identity_id,is_fallback,email_address,phone_number,email_enabled,
-                        sms_enabled,outcomes_json,created_at,updated_at"""
-                    values = (identity_id, int(fallback), email, phone, int(email_enabled), int(sms_enabled),
-                              json.dumps(sorted(outcomes)), now, now)
-                    if self.has_rule_user_id: columns += ",user_id"; values += (user_id,)
+                    columns = """identity_id,rule_type,email_address,phone_number,email_enabled,
+                        sms_enabled,created_at,updated_at"""
+                    values = (identity_id, rule_type, email, phone, int(email_enabled), int(sms_enabled), now, now)
                     cursor = connection.execute(
                         f"INSERT INTO notification_rules({columns}) VALUES({','.join('?' for _ in values)})", values)
                     rule_id = int(cursor.lastrowid)
                 else:
                     version = int(payload.get("version") or 0)
                     cursor = connection.execute(
-                        """UPDATE notification_rules SET identity_id=?,is_fallback=?,email_address=?,phone_number=?,
-                           email_enabled=?,sms_enabled=?,outcomes_json=?,version=version+1,updated_at=?
-                           WHERE id=? AND version=?""" + (" AND user_id=?" if self.has_rule_user_id else ""),
-                        (identity_id, int(fallback), email, phone, int(email_enabled), int(sms_enabled),
-                         json.dumps(sorted(outcomes)), now, rule_id, version,
-                         *((user_id,) if self.has_rule_user_id else ())))
+                        """UPDATE notification_rules SET identity_id=?,rule_type=?,email_address=?,phone_number=?,
+                           email_enabled=?,sms_enabled=?,version=version+1,updated_at=?
+                           WHERE id=? AND version=?""",
+                        (identity_id, rule_type, email, phone, int(email_enabled), int(sms_enabled),
+                         now, rule_id, version))
                     if cursor.rowcount != 1: raise NotificationError("This rule changed elsewhere. Refresh and try again.")
                     connection.execute("DELETE FROM notification_rule_cameras WHERE rule_id=?", (rule_id,))
                 connection.executemany("INSERT INTO notification_rule_cameras(rule_id,camera_id) VALUES(?,?)",
                                        [(rule_id, camera_id) for camera_id in camera_ids])
         except sqlite3.IntegrityError as exc:
-            raise NotificationError("A rule already exists for this identity or fallback.") from exc
+            raise NotificationError("A rule already exists for this identity or session outcome.") from exc
         return rule_id
 
-    def delete_rule(self, rule_id: int, user_id: int | None = None) -> bool:
-        if self.has_rule_user_id and user_id is None: raise NotificationError("An authenticated owner is required.")
+    def delete_rule(self, rule_id: int) -> bool:
         with self.connect() as connection:
-            return connection.execute(
-                "DELETE FROM notification_rules WHERE id=?" + (" AND user_id=?" if self.has_rule_user_id else ""),
-                (rule_id, user_id) if self.has_rule_user_id else (rule_id,),
-            ).rowcount == 1
+            return connection.execute("DELETE FROM notification_rules WHERE id=?", (rule_id,)).rowcount == 1
 
     def enqueue_session(self, session_id: int, base_url: str) -> int:
         count, now = 0, iso(utcnow())
         with self.connect() as connection:
             events = connection.execute(
-                """SELECT e.id,e.camera_id,e.occurred_at,c.name camera_name""" +
-                (",e.user_id" if self.has_event_user_id else "") + """ FROM camera_events e
+                """SELECT e.id,e.camera_id,e.occurred_at,c.name camera_name FROM camera_events e
                    JOIN cameras c ON c.id=e.camera_id JOIN recognition_session_events l ON l.event_id=e.id
-                   WHERE l.session_id=? AND e.state IN ('completed','failed')""", (session_id,)).fetchall()
-            for event in events:
+                   WHERE l.session_id=? AND e.state IN ('completed','failed')
+                   ORDER BY e.occurred_at,e.id""", (session_id,)).fetchall()
+            session_results = connection.execute(
+                """SELECT r.*,i.display_name identity_name FROM recognition_results r
+                   LEFT JOIN identities i ON i.id=r.identity_id WHERE r.session_id=?""",
+                (session_id,),
+            ).fetchall()
+            session = connection.execute(
+                "SELECT state FROM recognition_sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            has_face = any(r["outcome"] in {"recognized", "unrecognized_face"} for r in session_results)
+            session_rule_types = []
+            if any(r["outcome"] == "unrecognized_face" for r in session_results):
+                session_rule_types.append("unknown_face")
+            if session and session["state"] == "completed" and not has_face \
+                    and any(r["outcome"] == "no_face" for r in session_results):
+                session_rule_types.append("no_face")
+            if (session and session["state"] == "failed") \
+                    or any(r["outcome"] == "processing_error" for r in session_results):
+                session_rule_types.append("system_error")
+            for event_index, event in enumerate(events):
                 results = connection.execute(
                     """SELECT r.*,i.display_name identity_name FROM recognition_results r
                        LEFT JOIN identities i ON i.id=r.identity_id JOIN recognition_session_events l ON l.session_id=r.session_id
-                       WHERE l.event_id=? AND (r.capture_timestamp BETWEEN l.attribution_start AND l.attribution_end
-                       OR r.outcome IN ('no_face','processing_error'))""", (event["id"],)).fetchall()
+                       WHERE l.event_id=? AND r.capture_timestamp BETWEEN l.attribution_start AND l.attribution_end""",
+                    (event["id"],),
+                ).fetchall()
                 identities = {r["identity_id"]: r["identity_name"] for r in results if r["outcome"] == "recognized" and r["identity_id"]}
-                fallback = next((name for name in ("processing_error", "unrecognized_face", "no_face")
-                                 if any(r["outcome"] == name for r in results)), None)
-                matches = [(identity_id, "recognized", name) for identity_id, name in identities.items()]
-                if fallback: matches.append((None, fallback, None))
-                for identity_id, outcome, identity_name in matches:
+                matches = [(identity_id, RULE_OUTCOMES["identity"], name, "identity")
+                           for identity_id, name in identities.items()]
+                if event_index == 0:
+                    matches.extend((None, RULE_OUTCOMES[rule_type], None, rule_type)
+                                   for rule_type in session_rule_types)
+                for identity_id, outcome, identity_name, rule_type in matches:
                     rules = connection.execute(
                         """SELECT r.* FROM notification_rules r WHERE
-                           ((? IS NULL AND r.is_fallback=1) OR r.identity_id=?)
-                           """ + ("AND r.user_id=? " if self.has_rule_user_id else "") + """
-                           AND EXISTS(SELECT 1 FROM json_each(r.outcomes_json) WHERE value=?)
+                           r.rule_type=? AND (? IS NULL OR r.identity_id=?)
                            AND (NOT EXISTS(SELECT 1 FROM notification_rule_cameras rc WHERE rc.rule_id=r.id)
-                                OR EXISTS(SELECT 1 FROM notification_rule_cameras rc WHERE rc.rule_id=r.id AND rc.camera_id=?))""",
-                        ((identity_id, identity_id, event["user_id"], outcome, event["camera_id"])
-                         if self.has_rule_user_id else
-                         (identity_id, identity_id, outcome, event["camera_id"]))).fetchall()
+                                 OR EXISTS(SELECT 1 FROM notification_rule_cameras rc WHERE rc.rule_id=r.id AND rc.camera_id=?))""",
+                        (rule_type, identity_id, identity_id, event["camera_id"])).fetchall()
                     screenshot = connection.execute(
                         """SELECT s.id FROM screenshots s LEFT JOIN recognition_results r ON r.id=s.result_id
                            WHERE s.event_id=? OR (r.session_id=? AND r.identity_id IS ?)
+                           AND (?='recognized' OR r.outcome=?)
                            ORDER BY CASE s.role WHEN 'face_crop' THEN 0 ELSE 1 END,s.id LIMIT 1""",
-                        (event["id"], session_id, identity_id)).fetchone()
+                        (event["id"], session_id, identity_id, outcome, outcome)).fetchone()
                     for rule in rules:
                         for channel, enabled, destination in (("email", rule["email_enabled"], rule["email_address"]),
                                                               ("sms", rule["sms_enabled"], rule["phone_number"])):
                             if not enabled or not destination: continue
-                            columns = """event_id,rule_id,channel,destination,available_at,outcome,camera_name,
+                            columns = """event_id,session_id,rule_id,channel,destination,available_at,outcome,camera_name,
                                 identity_name,occurred_at,event_link,screenshot_id,created_at,updated_at"""
-                            values = (event["id"], rule["id"], channel, destination, now, outcome,
+                            values = (event["id"], session_id, rule["id"], channel, destination, now, outcome,
                                       event["camera_name"], identity_name, event["occurred_at"],
                                       f"{base_url.rstrip('/')}/?event={event['id']}",
                                       screenshot["id"] if screenshot else None, now, now)
-                            if self.has_delivery_user_id:
-                                if event["user_id"] is None: raise NotificationError("Event owner is missing.")
-                                columns += ",user_id"; values += (event["user_id"],)
                             cursor = connection.execute(
                                 f"INSERT OR IGNORE INTO notification_deliveries({columns}) "
                                 f"VALUES({','.join('?' for _ in values)})", values)
@@ -255,15 +245,11 @@ class NotificationRepository:
                 "SELECT id FROM recognition_sessions WHERE state IN ('completed','failed')")]
         for session_id in sessions: self.enqueue_session(session_id, base_url)
 
-    def enqueue_test(self, rule_id: int, channel: str, base_url: str, user_id: int | None = None) -> int:
-        if self.has_rule_user_id and user_id is None: raise NotificationError("An authenticated owner is required.")
+    def enqueue_test(self, rule_id: int, channel: str, base_url: str) -> int:
         if channel not in {"email", "sms"}: raise NotificationError("Channel must be email or SMS.")
         now = iso(utcnow())
         with self.connect() as connection:
-            rule = connection.execute(
-                "SELECT * FROM notification_rules WHERE id=?" + (" AND user_id=?" if self.has_rule_user_id else ""),
-                (rule_id, user_id) if self.has_rule_user_id else (rule_id,),
-            ).fetchone()
+            rule = connection.execute("SELECT * FROM notification_rules WHERE id=?", (rule_id,)).fetchone()
             if not rule: raise NotificationError("Notification rule not found.")
             destination = rule["email_address" if channel == "email" else "phone_number"]
             if not destination: raise NotificationError(f"Configure a destination before testing {channel}.")
@@ -271,7 +257,6 @@ class NotificationRepository:
                 occurred_at,event_link,is_test,created_at,updated_at"""
             values = (rule_id, channel, destination, now, "test", "VerifEye test", None, now,
                       base_url.rstrip("/"), 1, now, now)
-            if self.has_delivery_user_id: columns += ",user_id"; values += (rule["user_id"],)
             cursor = connection.execute(
                 f"INSERT INTO notification_deliveries({columns}) VALUES({','.join('?' for _ in values)})", values)
         return int(cursor.lastrowid)
@@ -304,10 +289,8 @@ class NotificationRepository:
                last_error=?,updated_at=? WHERE id=?""",
             ("failed" if terminal else "retrying", iso(utcnow() + timedelta(seconds=delay)), str(error)[:500], iso(utcnow()), row["id"]))
 
-    def deliveries(self, limit=50, offset=0, status=None, channel=None, user_id=None):
-        if self.has_delivery_user_id and user_id is None: raise NotificationError("An authenticated owner is required.")
+    def deliveries(self, limit=50, offset=0, status=None, channel=None):
         clauses, args = [], []
-        if self.has_delivery_user_id: clauses.append("user_id=?"); args.append(user_id)
         if status: clauses.append("status=?"); args.append(status)
         if channel: clauses.append("channel=?"); args.append(channel)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""

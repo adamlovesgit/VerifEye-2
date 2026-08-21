@@ -21,7 +21,6 @@ class EnrollmentServiceTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.database = self.root / "verifeye.db"
         self.service = EnrollmentService(self.database, self.root / "uploads", Mock())
-        self.user = SimpleNamespace(id=7, display_name="Account Owner")
         self.face = SimpleNamespace(embedding=np.array([1.0, 0.0], dtype=np.float32), score=.97)
 
     def tearDown(self):
@@ -35,8 +34,8 @@ class EnrollmentServiceTests(unittest.TestCase):
         detector_factory.return_value = Mock()
         process_frame.return_value = [self.face]
 
-        first = self.service.enroll(self.user, "  Ada Lovelace  ", b"first", ".jpg", "ada.jpg")
-        second = self.service.enroll(self.user, "Grace Hopper", b"second", ".png", "grace.png")
+        first = self.service.enroll("  Ada Lovelace  ", b"first", ".jpg", "ada.jpg")
+        second = self.service.enroll("Grace Hopper", b"second", ".png", "grace.png")
 
         with EmbeddingStore(self.database) as store:
             identities = store.list_identities()
@@ -44,10 +43,12 @@ class EnrollmentServiceTests(unittest.TestCase):
         self.assertNotEqual(first["identityId"], second["identityId"])
         self.assertEqual(first["displayName"], "Ada Lovelace")
         self.assertTrue(all(len(item.embeddings) == 1 for item in identities))
+        source_paths = [item.embeddings[0].source_path for item in identities]
+        self.assertTrue(all(Path(path).parent == Path(".") for path in source_paths))
 
     def test_blank_name_is_rejected_before_face_processing(self):
         with self.assertRaisesRegex(EnrollmentError, "Enter a name"):
-            self.service.enroll(self.user, "   ", b"image", ".jpg", "face.jpg")
+            self.service.enroll("   ", b"image", ".jpg", "face.jpg")
 
 
 if __name__ == "__main__": unittest.main()

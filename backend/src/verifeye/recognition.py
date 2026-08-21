@@ -58,10 +58,10 @@ class IdentityMatcher:
     def __init__(self, database, threshold: float) -> None:
         self.database, self.threshold = database, threshold
 
-    def match(self, embedding, user_id: int | None = None) -> RecognitionLabel:
+    def match(self, embedding) -> RecognitionLabel:
         with EmbeddingStore(self.database) as store:
             matches = store.find_matches(
-                embedding, user_id=user_id, limit=1, min_similarity=self.threshold
+                embedding, limit=1, min_similarity=self.threshold
             )
         if not matches:
             return RecognitionLabel("Unknown", None, None)

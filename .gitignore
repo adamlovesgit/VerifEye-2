@@ -7,3 +7,4 @@ __pycache__/
 .venv/
 secret.txt
 backend/data
+backend/data-backup-20260820-211808

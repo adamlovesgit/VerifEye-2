@@ -17,12 +17,6 @@ logger = logging.getLogger(__name__)
 class CameraRepository:
     def __init__(self, database: str | Path, cipher: CredentialCipher) -> None:
         self.database, self.cipher = Path(database), cipher
-        connection = sqlite3.connect(str(self.database))
-        try:
-            columns = {row[1] for row in connection.execute("PRAGMA table_info(cameras)")}
-        finally:
-            connection.close()
-        self.has_user_id = "user_id" in columns
 
     @contextmanager
     def _connect(self):
@@ -51,7 +45,7 @@ class CameraRepository:
 
     def create(self, name: str, url: str, enabled: bool, source_type: str = "manual", recognition_url: str | None = None,
                onvif_endpoint: str | None = None, onvif_username: str | None = None,
-               onvif_password: str | None = None, user_id: int | None = None) -> Camera:
+               onvif_password: str | None = None) -> Camera:
         encrypted = self.cipher.encrypt(url)
         onvif_credentials = None
         if onvif_endpoint is not None:
@@ -59,8 +53,6 @@ class CameraRepository:
                 "username": onvif_username or "", "password": onvif_password or "",
             }, separators=(",", ":")))
         recognition_url = None if not recognition_url or normalized_rtsp_url(recognition_url) == normalized_rtsp_url(url) else recognition_url
-        if self.has_user_id and user_id is None:
-            raise InvalidCameraConfiguration("An authenticated camera owner is required.")
         try:
             with self._connect() as db:
                 columns = """name, encrypted_url, url_fingerprint, recognition_encrypted_url,
@@ -70,8 +62,6 @@ class CameraRepository:
                           self.cipher.encrypt(recognition_url) if recognition_url else None,
                           hashlib.sha256(recognition_url.encode()).hexdigest() if recognition_url else None,
                           sanitized_host(url), source_type, int(enabled), onvif_endpoint, onvif_credentials)
-                if self.has_user_id:
-                    columns += ", user_id"; values += (user_id,)
                 placeholders = ", ".join("?" for _ in values)
                 cursor = db.execute(f"INSERT INTO cameras({columns}) VALUES ({placeholders})", values)
                 camera_id = int(cursor.lastrowid)
@@ -120,5 +110,4 @@ class CameraRepository:
         return Camera(row["id"], row["name"], self.cipher.decrypt(row["encrypted_url"]),
                       row["sanitized_host"], row["source_type"], bool(row["enabled"]),
                       self.cipher.decrypt(recognition) if recognition else None,
-                      row["onvif_endpoint"], credentials.get("username"), credentials.get("password"),
-                      row["user_id"] if self.has_user_id else None)
+                      row["onvif_endpoint"], credentials.get("username"), credentials.get("password"))

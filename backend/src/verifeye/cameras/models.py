@@ -39,7 +39,6 @@ class Camera:
     onvif_endpoint: str | None = None
     onvif_username: str | None = None
     onvif_password: str | None = None
-    user_id: int | None = None
 
 
 @dataclass(frozen=True)

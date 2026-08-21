@@ -14,7 +14,7 @@ class EnrollmentError(Exception): pass
 
 class EnrollmentService:
     def __init__(self, database, upload_dir, engine): self.database, self.upload_dir, self.engine = database, Path(upload_dir), engine
-    def enroll(self, user, display_name: str, contents: bytes, suffix: str, original_name: str | None):
+    def enroll(self, display_name: str, contents: bytes, suffix: str, original_name: str | None):
         display_name = display_name.strip()
         if not display_name or len(display_name) > 100:
             raise EnrollmentError("Enter a name between 1 and 100 characters.")
@@ -25,16 +25,16 @@ class EnrollmentService:
         finally: detector.close()
         if not faces: raise EnrollmentError("No face was found. Try a clear, front-facing photo.")
         if len(faces) > 1: raise EnrollmentError("Multiple faces were found. Upload a photo with one person.")
-        relative = Path(str(user.id)) / f"{uuid4().hex}{suffix}"; target = self.upload_dir / relative
+        relative = Path(f"{uuid4().hex}{suffix}"); target = self.upload_dir / relative
         target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(contents)
         try:
             with EmbeddingStore(self.database) as store:
-                identity = store.upsert_identity(f"identity-{uuid4().hex}", display_name, user.id)
+                identity = store.upsert_identity(f"identity-{uuid4().hex}", display_name)
                 try:
                     embedding_id = store.add_embedding(identity, faces[0].embedding, source_path=relative,
                         detection_score=float(faces[0].score), metadata={"original_name": original_name})
                 except Exception:
-                    store.delete_identity(identity, user.id)
+                    store.delete_identity(identity)
                     raise
         except Exception:
             target.unlink(missing_ok=True); raise

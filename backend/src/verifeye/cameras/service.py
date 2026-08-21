@@ -28,7 +28,7 @@ class CameraService:
         self.onvif_events = onvif_events
     def list(self): return [(camera, self.manager.status(camera.id)) for camera in self.repository.list()]
     def create(self, name, url, enabled=True, source_type="manual", recognition_url=None,
-               onvif_endpoint=None, onvif_username=None, onvif_password=None, user_id=None):
+               onvif_endpoint=None, onvif_username=None, onvif_password=None):
         if not name or not name.strip(): raise InvalidCameraConfiguration("Camera name is required.")
         if source_type not in {"manual", "onvif"}: raise InvalidCameraConfiguration("Camera source must be manual or onvif.")
         try: url = validate_rtsp_url(url)
@@ -37,7 +37,7 @@ class CameraService:
             try: recognition_url = validate_rtsp_url(recognition_url)
             except ValueError as exc: raise InvalidCameraConfiguration(str(exc)) from exc
         camera = self.repository.create(name, url, enabled, source_type, recognition_url,
-                                        onvif_endpoint, onvif_username, onvif_password, user_id)
+                                        onvif_endpoint, onvif_username, onvif_password)
         if enabled: self.manager.start(camera.id)
         if enabled and self.onvif_events: self.onvif_events.start(camera.id)
         return camera, self.manager.status(camera.id)

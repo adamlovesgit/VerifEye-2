@@ -252,15 +252,14 @@ class RecognitionCapture:
 
 
 class InferenceSession:
-    def __init__(self, engine, matcher, detector, frame_processor, user_id):
+    def __init__(self, engine, matcher, detector, frame_processor):
         self.engine, self.matcher, self.detector, self.frame_processor = engine, matcher, detector, frame_processor
-        self.user_id = user_id
     def process(self, record):
         faces = self.frame_processor(record.frame.copy(), self.detector, self.engine,
                                      {"detector": {"min_conf": .5, "pad_ratio": .15}})
         captured, results = datetime.fromtimestamp(record.captured_at, UTC).isoformat(), []
         for face in faces:
-            label = self.matcher.match(face.embedding, self.user_id)
+            label = self.matcher.match(face.embedding)
             crop_ok, crop = cv2.imencode(".jpg", face.aligned_rgb[..., ::-1], [cv2.IMWRITE_JPEG_QUALITY, 90])
             results.append({"capture_timestamp": captured, "frame_sequence": record.sequence,
                 "source_role": record.source_role,
@@ -278,8 +277,8 @@ class InferenceExecutor:
     """Own face detection and access to the process-wide ArcFace engine."""
     def __init__(self, engine, matcher, detector_factory=create_face_detector, frame_processor=process_frame):
         self.engine, self.matcher, self.detector_factory, self.frame_processor = engine, matcher, detector_factory, frame_processor
-    def open_session(self, user_id):
-        return InferenceSession(self.engine, self.matcher, self.detector_factory(.5), self.frame_processor, user_id)
+    def open_session(self):
+        return InferenceSession(self.engine, self.matcher, self.detector_factory(.5), self.frame_processor)
 
 
 class _RecognitionRuntime:
@@ -343,7 +342,7 @@ class RecognitionSessionManager:
     def _run(self, runtime):
         inference_session, face_count, failed = None, 0, None
         try:
-            inference_session = self.inference.open_session(runtime.camera.user_id)
+            inference_session = self.inference.open_session()
             endpoint = self.media_source.recognition_url(runtime.camera)
             if endpoint is None:
                 runtime.mode = RecognitionStreamMode.SHARED_LIGHTWEIGHT

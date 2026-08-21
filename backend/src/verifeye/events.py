@@ -70,12 +70,6 @@ class EventRepository:
     def __init__(self, database: str | Path, busy_timeout_ms: int = 5000):
         self.database = Path(database)
         self.busy_timeout_ms = busy_timeout_ms
-        connection = sqlite3.connect(str(self.database))
-        try:
-            columns = {row[1] for row in connection.execute("PRAGMA table_info(camera_events)")}
-        finally:
-            connection.close()
-        self.has_event_user_id = "user_id" in columns
 
     @contextmanager
     def connect(self):
@@ -155,13 +149,6 @@ class EventRepository:
                 metadata_json, state, created_at, updated_at"""
             values = (camera_id, source_event_id, event_type, iso(occurred_at), now,
                       json.dumps(metadata, separators=(",", ":")), "accepted", now, now)
-            if self.has_event_user_id:
-                owner = connection.execute(
-                    "SELECT user_id FROM cameras WHERE id=?", (camera_id,)
-                ).fetchone()
-                if owner is None or owner["user_id"] is None:
-                    raise InvalidEvent("The camera does not have an authenticated owner.")
-                columns += ", user_id"; values += (owner["user_id"],)
             placeholders = ", ".join("?" for _ in values)
             cursor = connection.execute(
                 f"INSERT INTO camera_events({columns}) VALUES ({placeholders})", values

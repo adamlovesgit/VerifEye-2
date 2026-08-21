@@ -2,8 +2,6 @@
 
 import sys
 from pathlib import Path
-import sqlite3
-import tempfile
 import unittest
 
 import numpy as np
@@ -47,35 +45,6 @@ class EmbeddingStoreTests(unittest.TestCase):
 
         self.assertEqual(matches[0].external_id, "ada")
         self.assertGreater(matches[0].similarity, 0.99)
-
-    def test_matching_only_searches_the_requested_users_identities(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database = Path(directory) / "owned.db"
-            with EmbeddingStore(database): pass
-            connection = sqlite3.connect(database)
-            try:
-                connection.execute("ALTER TABLE identities ADD COLUMN user_id INTEGER REFERENCES users(id)")
-                connection.executemany(
-                    "INSERT INTO users(email,display_name,password_hash,password_salt) VALUES(?,?,?,?)",
-                    [
-                        ("one@example.com", "One", b"hash", b"salt"),
-                        ("two@example.com", "Two", b"hash", b"salt"),
-                    ],
-                )
-                connection.commit()
-            finally:
-                connection.close()
-            with EmbeddingStore(database) as store:
-                first = store.upsert_identity("first", "First user", 1)
-                second = store.upsert_identity("second", "Second user", 2)
-                store.add_embedding(first, [1.0, 0.0])
-                store.add_embedding(second, [1.0, 0.0])
-
-                first_matches = store.find_matches([1.0, 0.0], user_id=1)
-                second_matches = store.find_matches([1.0, 0.0], user_id=2)
-
-            self.assertEqual([match.identity_id for match in first_matches], [first])
-            self.assertEqual([match.identity_id for match in second_matches], [second])
 
     def test_rejects_invalid_embedding(self) -> None:
         identity_id = self.store.upsert_identity("person-1", "Ada")

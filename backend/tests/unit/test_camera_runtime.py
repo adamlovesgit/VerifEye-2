@@ -161,9 +161,9 @@ class FakeInferenceSession:
     def process(self, _record): return []
     def close(self): pass
 class FakeInference:
-    def __init__(self): self.user_ids = []
-    def open_session(self, user_id):
-        self.user_ids.append(user_id)
+    def __init__(self): self.opened = 0
+    def open_session(self):
+        self.opened += 1
         return FakeInferenceSession()
 
 
@@ -209,8 +209,8 @@ class RecognitionModeTests(unittest.TestCase):
                                             capture_factory=capture_factory)
         return manager, cameras, sink
 
-    def test_session_uses_the_camera_owner_for_identity_matching(self):
-        camera = Camera(1, "Door", "rtsp://light", "host", "manual", True, user_id=7)
+    def test_session_opens_installation_level_identity_matching(self):
+        camera = Camera(1, "Door", "rtsp://light", "host", "manual", True)
         media = SimpleNamespace(recognition_url=lambda _camera: None)
         inference = FakeInference()
         manager = RecognitionSessionManager(
@@ -219,9 +219,9 @@ class RecognitionModeTests(unittest.TestCase):
         )
 
         manager.request(1, 10)
-        wait_for(lambda: bool(inference.user_ids))
+        wait_for(lambda: inference.opened == 1)
 
-        self.assertEqual(inference.user_ids, [7])
+        self.assertEqual(inference.opened, 1)
 
     def test_shared_lightweight_uses_latest_and_opens_zero_recognition_decoders(self):
         camera = Camera(1, "Door", "rtsp://light", "host", "manual", True)

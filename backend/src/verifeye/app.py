@@ -10,11 +10,12 @@ from pathlib import Path
 import re
 import sqlite3
 import threading
+from typing import Literal
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .auth import AuthError, AuthStore, User
 from .cameras import (
@@ -71,13 +72,14 @@ class OnvifImport(OnvifCredentials):
 
 
 class NotificationRulePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     identity_id: int | None = Field(default=None, alias="identityId")
-    is_fallback: bool = Field(default=False, alias="isFallback")
+    rule_type: Literal["identity", "unknown_face", "no_face", "system_error"] = Field(alias="ruleType")
     email_address: str | None = Field(default=None, alias="emailAddress", max_length=320)
     phone_number: str | None = Field(default=None, alias="phoneNumber", max_length=32)
     email_enabled: bool = Field(default=False, alias="emailEnabled")
     sms_enabled: bool = Field(default=False, alias="smsEnabled")
-    outcomes: list[str]
     camera_ids: list[int] = Field(default_factory=list, alias="cameraIds")
     version: int | None = None
 
@@ -308,12 +310,12 @@ def logout(authorization: str = Header(), _user=Depends(current_user)):
 
 
 @app.post("/api/enroll", status_code=201)
-async def enroll(name: str = Form(), image: UploadFile = File(), user=Depends(current_user)):
+async def enroll(name: str = Form(), image: UploadFile = File(), _user=Depends(current_user)):
     suffixes = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
     if image.content_type not in suffixes: raise HTTPException(415, "Upload a JPEG, PNG, or WebP image.")
     contents = await image.read(MAX_UPLOAD_BYTES + 1)
     if len(contents) > MAX_UPLOAD_BYTES: raise HTTPException(413, "Image must be 10 MB or smaller.")
-    try: return app.state.enrollment.enroll(user, name, contents, suffixes[image.content_type], image.filename)
+    try: return app.state.enrollment.enroll(name, contents, suffixes[image.content_type], image.filename)
     except EnrollmentError as exc: raise HTTPException(422, str(exc)) from exc
 
 
@@ -329,13 +331,13 @@ def list_identities(_user=Depends(current_user)):
         return [{"id": identity.id, "externalId": identity.external_id, "displayName": identity.display_name,
                  "createdAt": identity.created_at, "updatedAt": identity.updated_at,
                  "embeddings": [embedding_json(item) for item in identity.embeddings]}
-                for identity in store.list_identities(_user.id)]
+                for identity in store.list_identities()]
 
 
 @app.delete("/api/identities/{identity_id}", status_code=204)
 def delete_identity(identity_id: int, _user=Depends(current_user)):
     with EmbeddingStore(app.state.settings.database) as store:
-        try: source_paths = store.delete_identity(identity_id, _user.id)
+        try: source_paths = store.delete_identity(identity_id)
         except KeyError as exc: raise HTTPException(404, "Identity not found.") from exc
     upload_dir = Path(app.state.settings.upload_dir).resolve()
     for source_path in source_paths:
@@ -346,7 +348,7 @@ def delete_identity(identity_id: int, _user=Depends(current_user)):
 
 @app.get("/api/notification-settings")
 def notification_settings(_user=Depends(current_user)):
-    value = app.state.notifications.settings(_user.id)
+    value = app.state.notifications.settings()
     providers = app.state.notification_providers
     value["providers"] = {"email": {"ready": providers.email_ready}, "sms": {"ready": providers.sms_ready}}
     return value
@@ -358,21 +360,21 @@ def notification_payload(payload: NotificationRulePayload) -> dict:
 
 @app.post("/api/notification-rules", status_code=201)
 def create_notification_rule(payload: NotificationRulePayload, _user=Depends(current_user)):
-    try: rule_id = app.state.notifications.save_rule(notification_payload(payload), user_id=_user.id)
+    try: rule_id = app.state.notifications.save_rule(notification_payload(payload))
     except NotificationError as exc: raise HTTPException(422, str(exc)) from exc
     return {"id": rule_id}
 
 
 @app.put("/api/notification-rules/{rule_id}")
 def update_notification_rule(rule_id: int, payload: NotificationRulePayload, _user=Depends(current_user)):
-    try: app.state.notifications.save_rule(notification_payload(payload), rule_id, _user.id)
+    try: app.state.notifications.save_rule(notification_payload(payload), rule_id)
     except NotificationError as exc: raise HTTPException(409 if "changed elsewhere" in str(exc) else 422, str(exc)) from exc
     return {"id": rule_id}
 
 
 @app.delete("/api/notification-rules/{rule_id}", status_code=204)
 def delete_notification_rule(rule_id: int, _user=Depends(current_user)):
-    if not app.state.notifications.delete_rule(rule_id, _user.id): raise HTTPException(404, "Notification rule not found.")
+    if not app.state.notifications.delete_rule(rule_id): raise HTTPException(404, "Notification rule not found.")
     return Response(status_code=204)
 
 
@@ -382,7 +384,7 @@ def test_notification(payload: NotificationTestPayload, _user=Depends(current_us
     if payload.channel == "email" and not providers.email_ready: raise HTTPException(409, "SMTP provider is not configured.")
     if payload.channel == "sms" and not providers.sms_ready: raise HTTPException(409, "Twilio provider is not configured.")
     try: delivery_id = app.state.notifications.enqueue_test(
-        payload.rule_id, payload.channel, providers.public_base_url, _user.id
+        payload.rule_id, payload.channel, providers.public_base_url
     )
     except NotificationError as exc: raise HTTPException(422, str(exc)) from exc
     return {"id": delivery_id, "status": "queued"}
@@ -394,7 +396,7 @@ def notification_deliveries(limit: int = 50, offset: int = 0, status: str | None
     if not 1 <= limit <= 200 or offset < 0: raise HTTPException(422, "Invalid pagination.")
     if status and status not in {"queued","claimed","retrying","sent","failed"}: raise HTTPException(422, "Invalid status filter.")
     if channel and channel not in {"email","sms"}: raise HTTPException(422, "Invalid channel filter.")
-    return app.state.notifications.deliveries(limit, offset, status, channel, _user.id)
+    return app.state.notifications.deliveries(limit, offset, status, channel)
 
 
 @app.get("/api/cameras")
@@ -405,7 +407,7 @@ def list_cameras(_user=Depends(current_user)): return [camera_json(*item) for it
 def create_camera(payload: CameraCreate, _user=Depends(current_user)):
     return camera_json(*app.state.cameras.create(
         payload.name, payload.url, payload.enabled, payload.sourceType,
-        payload.recognition_url, user_id=_user.id,
+        payload.recognition_url,
     ))
 
 
@@ -609,7 +611,6 @@ def onvif_import(payload: OnvifImport, _user=Depends(current_user)):
             payload.name, authenticated_url(preview), True, "onvif",
             authenticated_url(recognition) if recognition else None,
             payload.endpoint, payload.username, payload.password,
-            user_id=_user.id,
         )
         return camera_json(*created)
     except StopIteration as exc: raise HTTPException(400, "The selected ONVIF profile no longer exists.") from exc
