@@ -77,6 +77,16 @@ class ProviderSettings:
 class NotificationRepository:
     def __init__(self, database: str | Path, busy_timeout_ms: int = 5000):
         self.database, self.busy_timeout_ms = Path(database), busy_timeout_ms
+        connection = sqlite3.connect(str(self.database))
+        try:
+            rule_columns = {row[1] for row in connection.execute("PRAGMA table_info(notification_rules)")}
+            delivery_columns = {row[1] for row in connection.execute("PRAGMA table_info(notification_deliveries)")}
+            event_columns = {row[1] for row in connection.execute("PRAGMA table_info(camera_events)")}
+        finally:
+            connection.close()
+        self.has_rule_user_id = "user_id" in rule_columns
+        self.has_delivery_user_id = "user_id" in delivery_columns
+        self.has_event_user_id = "user_id" in event_columns
 
     @contextmanager
     def connect(self):
@@ -89,16 +99,25 @@ class NotificationRepository:
         finally:
             connection.close()
 
-    def settings(self) -> dict[str, Any]:
+    def settings(self, user_id: int | None = None) -> dict[str, Any]:
+        if self.has_rule_user_id and user_id is None: raise NotificationError("An authenticated owner is required.")
+        owner_where = " WHERE user_id=?" if self.has_rule_user_id else ""
+        owner_args = (user_id,) if self.has_rule_user_id else ()
         with self.connect() as connection:
             identities = [dict(row) for row in connection.execute(
-                "SELECT id, display_name AS displayName FROM identities ORDER BY display_name COLLATE NOCASE")]
+                "SELECT id, display_name AS displayName FROM identities" + owner_where +
+                " ORDER BY display_name COLLATE NOCASE", owner_args)]
             cameras = [dict(row) for row in connection.execute(
-                "SELECT id, name FROM cameras ORDER BY name COLLATE NOCASE")]
+                "SELECT id, name FROM cameras" + owner_where + " ORDER BY name COLLATE NOCASE", owner_args)]
             rows = connection.execute(
                 """SELECT r.*, i.display_name AS identity_name FROM notification_rules r
-                   LEFT JOIN identities i ON i.id = r.identity_id ORDER BY r.is_fallback DESC, i.display_name""").fetchall()
-            camera_rows = connection.execute("SELECT rule_id, camera_id FROM notification_rule_cameras").fetchall()
+                   LEFT JOIN identities i ON i.id = r.identity_id""" +
+                (" WHERE r.user_id=?" if self.has_rule_user_id else "") +
+                " ORDER BY r.is_fallback DESC, i.display_name", owner_args).fetchall()
+            camera_rows = connection.execute(
+                """SELECT rc.rule_id,rc.camera_id FROM notification_rule_cameras rc
+                   JOIN notification_rules r ON r.id=rc.rule_id""" +
+                (" WHERE r.user_id=?" if self.has_rule_user_id else ""), owner_args).fetchall()
         by_rule: dict[int, list[int]] = {}
         for row in camera_rows:
             by_rule.setdefault(row["rule_id"], []).append(row["camera_id"])
@@ -113,7 +132,9 @@ class NotificationRepository:
                 "smsEnabled": bool(row["sms_enabled"]), "outcomes": json.loads(row["outcomes_json"]),
                 "cameraIds": sorted(cameras), "version": row["version"]}
 
-    def save_rule(self, payload: dict[str, Any], rule_id: int | None = None) -> int:
+    def save_rule(self, payload: dict[str, Any], rule_id: int | None = None,
+                  user_id: int | None = None) -> int:
+        if self.has_rule_user_id and user_id is None: raise NotificationError("An authenticated owner is required.")
         identity_id = payload.get("identityId")
         fallback = bool(payload.get("isFallback", False))
         if fallback == (identity_id is not None):
@@ -130,27 +151,34 @@ class NotificationRepository:
         now = iso(utcnow())
         try:
             with self.connect() as connection:
-                if identity_id is not None and connection.execute("SELECT 1 FROM identities WHERE id=?", (identity_id,)).fetchone() is None:
+                identity_query = "SELECT 1 FROM identities WHERE id=?" + (" AND user_id=?" if self.has_rule_user_id else "")
+                identity_args = (identity_id, user_id) if self.has_rule_user_id else (identity_id,)
+                if identity_id is not None and connection.execute(identity_query, identity_args).fetchone() is None:
                     raise NotificationError("Identity not found.")
                 if camera_ids:
+                    camera_owner = " AND user_id=?" if self.has_rule_user_id else ""
+                    camera_args = (*tuple(camera_ids), user_id) if self.has_rule_user_id else tuple(camera_ids)
                     found = {r[0] for r in connection.execute(
-                        f"SELECT id FROM cameras WHERE id IN ({','.join('?' for _ in camera_ids)})", tuple(camera_ids))}
+                        f"SELECT id FROM cameras WHERE id IN ({','.join('?' for _ in camera_ids)}){camera_owner}", camera_args)}
                     if found != camera_ids: raise NotificationError("One or more cameras were not found.")
                 if rule_id is None:
+                    columns = """identity_id,is_fallback,email_address,phone_number,email_enabled,
+                        sms_enabled,outcomes_json,created_at,updated_at"""
+                    values = (identity_id, int(fallback), email, phone, int(email_enabled), int(sms_enabled),
+                              json.dumps(sorted(outcomes)), now, now)
+                    if self.has_rule_user_id: columns += ",user_id"; values += (user_id,)
                     cursor = connection.execute(
-                        """INSERT INTO notification_rules(identity_id,is_fallback,email_address,phone_number,
-                           email_enabled,sms_enabled,outcomes_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)""",
-                        (identity_id, int(fallback), email, phone, int(email_enabled), int(sms_enabled),
-                         json.dumps(sorted(outcomes)), now, now))
+                        f"INSERT INTO notification_rules({columns}) VALUES({','.join('?' for _ in values)})", values)
                     rule_id = int(cursor.lastrowid)
                 else:
                     version = int(payload.get("version") or 0)
                     cursor = connection.execute(
                         """UPDATE notification_rules SET identity_id=?,is_fallback=?,email_address=?,phone_number=?,
                            email_enabled=?,sms_enabled=?,outcomes_json=?,version=version+1,updated_at=?
-                           WHERE id=? AND version=?""",
+                           WHERE id=? AND version=?""" + (" AND user_id=?" if self.has_rule_user_id else ""),
                         (identity_id, int(fallback), email, phone, int(email_enabled), int(sms_enabled),
-                         json.dumps(sorted(outcomes)), now, rule_id, version))
+                         json.dumps(sorted(outcomes)), now, rule_id, version,
+                         *((user_id,) if self.has_rule_user_id else ())))
                     if cursor.rowcount != 1: raise NotificationError("This rule changed elsewhere. Refresh and try again.")
                     connection.execute("DELETE FROM notification_rule_cameras WHERE rule_id=?", (rule_id,))
                 connection.executemany("INSERT INTO notification_rule_cameras(rule_id,camera_id) VALUES(?,?)",
@@ -159,15 +187,20 @@ class NotificationRepository:
             raise NotificationError("A rule already exists for this identity or fallback.") from exc
         return rule_id
 
-    def delete_rule(self, rule_id: int) -> bool:
+    def delete_rule(self, rule_id: int, user_id: int | None = None) -> bool:
+        if self.has_rule_user_id and user_id is None: raise NotificationError("An authenticated owner is required.")
         with self.connect() as connection:
-            return connection.execute("DELETE FROM notification_rules WHERE id=?", (rule_id,)).rowcount == 1
+            return connection.execute(
+                "DELETE FROM notification_rules WHERE id=?" + (" AND user_id=?" if self.has_rule_user_id else ""),
+                (rule_id, user_id) if self.has_rule_user_id else (rule_id,),
+            ).rowcount == 1
 
     def enqueue_session(self, session_id: int, base_url: str) -> int:
         count, now = 0, iso(utcnow())
         with self.connect() as connection:
             events = connection.execute(
-                """SELECT e.id,e.camera_id,e.occurred_at,c.name camera_name FROM camera_events e
+                """SELECT e.id,e.camera_id,e.occurred_at,c.name camera_name""" +
+                (",e.user_id" if self.has_event_user_id else "") + """ FROM camera_events e
                    JOIN cameras c ON c.id=e.camera_id JOIN recognition_session_events l ON l.event_id=e.id
                    WHERE l.session_id=? AND e.state IN ('completed','failed')""", (session_id,)).fetchall()
             for event in events:
@@ -185,10 +218,13 @@ class NotificationRepository:
                     rules = connection.execute(
                         """SELECT r.* FROM notification_rules r WHERE
                            ((? IS NULL AND r.is_fallback=1) OR r.identity_id=?)
+                           """ + ("AND r.user_id=? " if self.has_rule_user_id else "") + """
                            AND EXISTS(SELECT 1 FROM json_each(r.outcomes_json) WHERE value=?)
                            AND (NOT EXISTS(SELECT 1 FROM notification_rule_cameras rc WHERE rc.rule_id=r.id)
                                 OR EXISTS(SELECT 1 FROM notification_rule_cameras rc WHERE rc.rule_id=r.id AND rc.camera_id=?))""",
-                        (identity_id, identity_id, outcome, event["camera_id"])).fetchall()
+                        ((identity_id, identity_id, event["user_id"], outcome, event["camera_id"])
+                         if self.has_rule_user_id else
+                         (identity_id, identity_id, outcome, event["camera_id"]))).fetchall()
                     screenshot = connection.execute(
                         """SELECT s.id FROM screenshots s LEFT JOIN recognition_results r ON r.id=s.result_id
                            WHERE s.event_id=? OR (r.session_id=? AND r.identity_id IS ?)
@@ -198,13 +234,18 @@ class NotificationRepository:
                         for channel, enabled, destination in (("email", rule["email_enabled"], rule["email_address"]),
                                                               ("sms", rule["sms_enabled"], rule["phone_number"])):
                             if not enabled or not destination: continue
+                            columns = """event_id,rule_id,channel,destination,available_at,outcome,camera_name,
+                                identity_name,occurred_at,event_link,screenshot_id,created_at,updated_at"""
+                            values = (event["id"], rule["id"], channel, destination, now, outcome,
+                                      event["camera_name"], identity_name, event["occurred_at"],
+                                      f"{base_url.rstrip('/')}/?event={event['id']}",
+                                      screenshot["id"] if screenshot else None, now, now)
+                            if self.has_delivery_user_id:
+                                if event["user_id"] is None: raise NotificationError("Event owner is missing.")
+                                columns += ",user_id"; values += (event["user_id"],)
                             cursor = connection.execute(
-                                """INSERT OR IGNORE INTO notification_deliveries(event_id,rule_id,channel,destination,
-                                   available_at,outcome,camera_name,identity_name,occurred_at,event_link,screenshot_id,
-                                   created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                (event["id"], rule["id"], channel, destination, now, outcome, event["camera_name"],
-                                 identity_name, event["occurred_at"], f"{base_url.rstrip('/')}/?event={event['id']}",
-                                 screenshot["id"] if screenshot else None, now, now))
+                                f"INSERT OR IGNORE INTO notification_deliveries({columns}) "
+                                f"VALUES({','.join('?' for _ in values)})", values)
                             count += cursor.rowcount
         return count
 
@@ -214,19 +255,25 @@ class NotificationRepository:
                 "SELECT id FROM recognition_sessions WHERE state IN ('completed','failed')")]
         for session_id in sessions: self.enqueue_session(session_id, base_url)
 
-    def enqueue_test(self, rule_id: int, channel: str, base_url: str) -> int:
+    def enqueue_test(self, rule_id: int, channel: str, base_url: str, user_id: int | None = None) -> int:
+        if self.has_rule_user_id and user_id is None: raise NotificationError("An authenticated owner is required.")
         if channel not in {"email", "sms"}: raise NotificationError("Channel must be email or SMS.")
         now = iso(utcnow())
         with self.connect() as connection:
-            rule = connection.execute("SELECT * FROM notification_rules WHERE id=?", (rule_id,)).fetchone()
+            rule = connection.execute(
+                "SELECT * FROM notification_rules WHERE id=?" + (" AND user_id=?" if self.has_rule_user_id else ""),
+                (rule_id, user_id) if self.has_rule_user_id else (rule_id,),
+            ).fetchone()
             if not rule: raise NotificationError("Notification rule not found.")
             destination = rule["email_address" if channel == "email" else "phone_number"]
             if not destination: raise NotificationError(f"Configure a destination before testing {channel}.")
+            columns = """rule_id,channel,destination,available_at,outcome,camera_name,identity_name,
+                occurred_at,event_link,is_test,created_at,updated_at"""
+            values = (rule_id, channel, destination, now, "test", "VerifEye test", None, now,
+                      base_url.rstrip("/"), 1, now, now)
+            if self.has_delivery_user_id: columns += ",user_id"; values += (rule["user_id"],)
             cursor = connection.execute(
-                """INSERT INTO notification_deliveries(rule_id,channel,destination,available_at,outcome,camera_name,
-                   identity_name,occurred_at,event_link,is_test,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,1,?,?)""",
-                (rule_id, channel, destination, now, "test", "VerifEye test", None, now,
-                 base_url.rstrip("/"), now, now))
+                f"INSERT INTO notification_deliveries({columns}) VALUES({','.join('?' for _ in values)})", values)
         return int(cursor.lastrowid)
 
     def claim(self, owner: str, lease_seconds: float):
@@ -257,8 +304,10 @@ class NotificationRepository:
                last_error=?,updated_at=? WHERE id=?""",
             ("failed" if terminal else "retrying", iso(utcnow() + timedelta(seconds=delay)), str(error)[:500], iso(utcnow()), row["id"]))
 
-    def deliveries(self, limit=50, offset=0, status=None, channel=None):
+    def deliveries(self, limit=50, offset=0, status=None, channel=None, user_id=None):
+        if self.has_delivery_user_id and user_id is None: raise NotificationError("An authenticated owner is required.")
         clauses, args = [], []
+        if self.has_delivery_user_id: clauses.append("user_id=?"); args.append(user_id)
         if status: clauses.append("status=?"); args.append(status)
         if channel: clauses.append("channel=?"); args.append(channel)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""

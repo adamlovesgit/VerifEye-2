@@ -70,6 +70,12 @@ class EventRepository:
     def __init__(self, database: str | Path, busy_timeout_ms: int = 5000):
         self.database = Path(database)
         self.busy_timeout_ms = busy_timeout_ms
+        connection = sqlite3.connect(str(self.database))
+        try:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(camera_events)")}
+        finally:
+            connection.close()
+        self.has_event_user_id = "user_id" in columns
 
     @contextmanager
     def connect(self):
@@ -145,13 +151,20 @@ class EventRepository:
             ).fetchone()
             if existing:
                 return AcceptedEvent(existing["id"], existing["state"], existing["accepted_at"], False)
+            columns = """camera_id, source_event_id, event_type, occurred_at, accepted_at,
+                metadata_json, state, created_at, updated_at"""
+            values = (camera_id, source_event_id, event_type, iso(occurred_at), now,
+                      json.dumps(metadata, separators=(",", ":")), "accepted", now, now)
+            if self.has_event_user_id:
+                owner = connection.execute(
+                    "SELECT user_id FROM cameras WHERE id=?", (camera_id,)
+                ).fetchone()
+                if owner is None or owner["user_id"] is None:
+                    raise InvalidEvent("The camera does not have an authenticated owner.")
+                columns += ", user_id"; values += (owner["user_id"],)
+            placeholders = ", ".join("?" for _ in values)
             cursor = connection.execute(
-                """INSERT INTO camera_events(
-                       camera_id, source_event_id, event_type, occurred_at, accepted_at,
-                       metadata_json, state, created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?, ?)""",
-                (camera_id, source_event_id, event_type, iso(occurred_at),
-                 now, json.dumps(metadata, separators=(",", ":")), now, now),
+                f"INSERT INTO camera_events({columns}) VALUES ({placeholders})", values
             )
             event_id = int(cursor.lastrowid)
             if screenshot:
@@ -281,6 +294,23 @@ class EventRepository:
         if row is None:
             raise KeyError(session_id)
         return row["state"]
+
+    def session_spec(self, session_id: int) -> dict[str, Any]:
+        """Return durable UTC boundaries used to derive monotonic runtime timing."""
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT s.interval_start, s.interval_end, s.maximum_end,
+                          MIN(e.occurred_at) AS trigger_at
+                   FROM recognition_sessions s
+                   JOIN recognition_session_events l ON l.session_id=s.id
+                   JOIN camera_events e ON e.id=l.event_id
+                   WHERE s.id=? GROUP BY s.id""", (session_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(session_id)
+        return {name: parse_utc(row[name]) for name in (
+            "interval_start", "interval_end", "maximum_end", "trigger_at"
+        )}
 
     def transition_session(
         self, session_id: int, state: str, *, stream_mode: str | None = None,
@@ -607,6 +637,53 @@ class ScreenshotStorage:
                     path.unlink(missing_ok=True)
 
 
+class RecognitionPersistenceSink:
+    """Explicit persistence boundary for recognition runtime output."""
+
+    def __init__(self, repository: EventRepository, screenshot_storage: ScreenshotStorage | None = None):
+        self.repository, self.screenshot_storage = repository, screenshot_storage
+        self.notification_callback = None
+        self._capture_errors, self._lock = {}, threading.Lock()
+
+    def session_spec(self, session_id):
+        return self.repository.session_spec(session_id)
+
+    def active(self, session_id: int, stream_mode: str, error: str | None = None) -> None:
+        if error:
+            with self._lock: self._capture_errors[session_id] = error
+        self.repository.transition_session(
+            session_id, "active", stream_mode=stream_mode,
+            error_code="capture_fallback" if error else None, error_message=error,
+        )
+
+    def results(self, session_id: int, results: list[dict[str, Any]]) -> None:
+        finalized = []
+        try:
+            if self.screenshot_storage:
+                for item in results:
+                    image = item.pop("image_bytes", None)
+                    if image:
+                        path, record = self.screenshot_storage.stage(image, "image/jpeg", generated=True)
+                        finalized.append(path); item["screenshot"] = record
+            self.repository.add_results(session_id, results)
+        except Exception:
+            for path in finalized: path.unlink(missing_ok=True)
+            raise
+
+    def terminal(self, session_id: int, error: str | None) -> None:
+        state = "failed" if error else "completed"
+        with self._lock: capture_error = self._capture_errors.pop(session_id, None)
+        self.repository.transition_session(
+            session_id, state,
+            error_code="recognition_failed" if error else ("capture_fallback" if capture_error else None),
+            error_message=error or capture_error,
+        )
+        notifier = self.notification_callback
+        if notifier:
+            try: notifier(session_id)
+            except Exception: logger.exception("Notification planning failed for recognition session %s.", session_id)
+
+
 class EventDispatcher:
     def __init__(
         self, repository: EventRepository, manager, pre_roll: float, window: float, maximum: float,
@@ -667,11 +744,7 @@ class EventDispatcher:
                     renewal = threading.Thread(target=renew, daemon=True)
                     renewal.start()
                     try:
-                        self.manager.trigger_recognition(
-                            row["camera_id"], session_id=session_id,
-                            lifecycle_callback=self._lifecycle,
-                            result_callback=self._results,
-                        )
+                        self.manager.request(row["camera_id"], session_id)
                     finally:
                         renewal_stop.set()
                         renewal.join(min(1, self.lease_seconds / 2))
@@ -686,34 +759,3 @@ class EventDispatcher:
                 self.repository.retry_dispatch(
                     row, self.owner, "dispatch_failed", str(exc), self.max_attempts
                 )
-
-    def _lifecycle(self, session_id: int, state: str, stream_mode: str | None, error: str | None) -> None:
-        code = "recognition_failed" if state == "failed" else None
-        self.repository.transition_session(
-            session_id, state, stream_mode=stream_mode, error_code=code, error_message=error
-        )
-        if state in TERMINAL_SESSION_STATES:
-            notifier = getattr(self, "notification_callback", None)
-            if notifier:
-                try:
-                    notifier(session_id)
-                except Exception:
-                    logger.exception("Notification planning failed for recognition session %s.", session_id)
-
-    def _results(self, session_id: int, results: list[dict[str, Any]]) -> None:
-        finalized = []
-        try:
-            if self.screenshot_storage:
-                for item in results:
-                    image = item.pop("image_bytes", None)
-                    if image:
-                        path, record = self.screenshot_storage.stage(
-                            image, "image/jpeg", generated=True
-                        )
-                        finalized.append(path)
-                        item["screenshot"] = record
-            self.repository.add_results(session_id, results)
-        except Exception:
-            for path in finalized:
-                path.unlink(missing_ok=True)
-            raise

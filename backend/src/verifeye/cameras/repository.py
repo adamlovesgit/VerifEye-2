@@ -3,16 +3,26 @@
 from pathlib import Path
 import hashlib
 import json
+import logging
 import sqlite3
 from contextlib import contextmanager
 
-from .models import Camera, CameraNotFound, DuplicateCamera
+from .models import Camera, CameraNotFound, DuplicateCamera, InvalidCameraConfiguration
 from .security import CredentialCipher, normalized_rtsp_url, sanitized_host
+
+
+logger = logging.getLogger(__name__)
 
 
 class CameraRepository:
     def __init__(self, database: str | Path, cipher: CredentialCipher) -> None:
         self.database, self.cipher = Path(database), cipher
+        connection = sqlite3.connect(str(self.database))
+        try:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(cameras)")}
+        finally:
+            connection.close()
+        self.has_user_id = "user_id" in columns
 
     @contextmanager
     def _connect(self):
@@ -41,7 +51,7 @@ class CameraRepository:
 
     def create(self, name: str, url: str, enabled: bool, source_type: str = "manual", recognition_url: str | None = None,
                onvif_endpoint: str | None = None, onvif_username: str | None = None,
-               onvif_password: str | None = None) -> Camera:
+               onvif_password: str | None = None, user_id: int | None = None) -> Camera:
         encrypted = self.cipher.encrypt(url)
         onvif_credentials = None
         if onvif_endpoint is not None:
@@ -49,22 +59,29 @@ class CameraRepository:
                 "username": onvif_username or "", "password": onvif_password or "",
             }, separators=(",", ":")))
         recognition_url = None if not recognition_url or normalized_rtsp_url(recognition_url) == normalized_rtsp_url(url) else recognition_url
+        if self.has_user_id and user_id is None:
+            raise InvalidCameraConfiguration("An authenticated camera owner is required.")
         try:
             with self._connect() as db:
-                cursor = db.execute(
-                    """INSERT INTO cameras(
-                           name, encrypted_url, url_fingerprint, recognition_encrypted_url,
-                           recognition_url_fingerprint, sanitized_host, source_type, enabled
-                           , onvif_endpoint, onvif_encrypted_credentials
-                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (name.strip(), encrypted, hashlib.sha256(url.encode()).hexdigest(),
-                     self.cipher.encrypt(recognition_url) if recognition_url else None,
-                     hashlib.sha256(recognition_url.encode()).hexdigest() if recognition_url else None,
-                     sanitized_host(url), source_type, int(enabled), onvif_endpoint, onvif_credentials),
-                )
+                columns = """name, encrypted_url, url_fingerprint, recognition_encrypted_url,
+                    recognition_url_fingerprint, sanitized_host, source_type, enabled,
+                    onvif_endpoint, onvif_encrypted_credentials"""
+                values = (name.strip(), encrypted, hashlib.sha256(url.encode()).hexdigest(),
+                          self.cipher.encrypt(recognition_url) if recognition_url else None,
+                          hashlib.sha256(recognition_url.encode()).hexdigest() if recognition_url else None,
+                          sanitized_host(url), source_type, int(enabled), onvif_endpoint, onvif_credentials)
+                if self.has_user_id:
+                    columns += ", user_id"; values += (user_id,)
+                placeholders = ", ".join("?" for _ in values)
+                cursor = db.execute(f"INSERT INTO cameras({columns}) VALUES ({placeholders})", values)
                 camera_id = int(cursor.lastrowid)
         except sqlite3.IntegrityError as exc:
-            raise DuplicateCamera("A camera with that name or connection already exists.") from exc
+            logger.exception("Camera insert failed because of SQLite constraint: %s", exc)
+            if "UNIQUE constraint failed" in str(exc):
+                raise DuplicateCamera("A camera with that name or connection already exists.") from exc
+            raise InvalidCameraConfiguration(
+                "The camera could not be saved because a database constraint was not satisfied."
+            ) from exc
         return self.get(camera_id)
 
     def update(self, camera_id: int, *, name=None, url=None, enabled=None, recognition_url=...) -> Camera:
@@ -83,7 +100,12 @@ class CameraRepository:
                               recognition_encrypted_url=?, recognition_url_fingerprint=?,
                               sanitized_host=?, enabled=?, updated_at=CURRENT_TIMESTAMP WHERE id=?""", values)
         except sqlite3.IntegrityError as exc:
-            raise DuplicateCamera("A camera with that name or connection already exists.") from exc
+            logger.exception("Camera update failed because of SQLite constraint: %s", exc)
+            if "UNIQUE constraint failed" in str(exc):
+                raise DuplicateCamera("A camera with that name or connection already exists.") from exc
+            raise InvalidCameraConfiguration(
+                "The camera could not be updated because a database constraint was not satisfied."
+            ) from exc
         return self.get(camera_id)
 
     def delete(self, camera_id: int) -> None:

@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -66,6 +67,32 @@ class CameraRepositoryTests(unittest.TestCase):
         self.assertNotIn(b"camera-password", raw)
         self.assertNotIn(b"admin", raw)
 
+    def test_owner_is_inserted_when_schema_requires_user_id(self):
+        connection = sqlite3.connect(self.database)
+        try:
+            connection.execute("ALTER TABLE cameras ADD COLUMN user_id INTEGER REFERENCES users(id)")
+            connection.execute("""CREATE TRIGGER require_cameras_user_insert
+                BEFORE INSERT ON cameras WHEN NEW.user_id IS NULL
+                BEGIN SELECT RAISE(ABORT, 'user_id is required'); END""")
+            connection.execute(
+                "INSERT INTO users(email,display_name,password_hash,password_salt) VALUES (?,?,?,?)",
+                ("owner@example.com", "Owner", b"hash", b"salt"),
+            )
+            user_id = connection.execute("SELECT id FROM users").fetchone()[0]
+            connection.commit()
+        finally:
+            connection.close()
+        repository = CameraRepository(self.database, CredentialCipher(self.key))
+        camera = repository.create("Owned", "rtsp://camera.local/live", False, user_id=user_id)
+        connection = sqlite3.connect(self.database)
+        try:
+            stored_owner = connection.execute(
+                "SELECT user_id FROM cameras WHERE id=?", (camera.id,)
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertEqual(stored_owner, user_id)
+
 
 class BufferTests(unittest.TestCase):
     def test_latest_frame_replaces_old_values(self):
@@ -83,14 +110,23 @@ class FakeRepository:
     def list(self): return [self.camera]
     def delete(self, _): self.deleted = True
 
+class FakeMedia:
+    def provision(self, _camera): pass
+    def remove(self, _camera_id): pass
+    def preroll_url(self, _camera_id): return type("Endpoint", (), {"url":"rtsp://router/preview"})()
+    def media_ready(self, _camera_id): return True
+
 class FakeWorker:
-    def __init__(self, camera, *_): self.camera=camera; self.started=False; self.stopped=False
+    def __init__(self, camera, *_args, **_kwargs):
+        from verifeye.cameras.runtime import PreRollStatus
+        self.camera=camera; self.started=False; self.stopped=False
+        self._status_type = PreRollStatus
+        self.publisher = FramePublisher()
     @property
-    def status(self):
-        from verifeye.cameras.models import CameraStatus
-        return CameraStatus(self.camera.id, self.camera.enabled, self.started and not self.stopped, ConnectionState.LIVE if self.started and not self.stopped else ConnectionState.STOPPED)
+    def status(self): return self._status_type(running=self.started and not self.stopped, ready=self.started and not self.stopped)
     def start(self): self.started=True
-    def stop(self, _): self.stopped=True
+    def request_stop(self): self.stopped=True
+    def finish_stop(self, _): pass
 
 class SlowWorker(FakeWorker):
     cleanup_started = threading.Event()
@@ -102,18 +138,18 @@ class SlowWorker(FakeWorker):
 
 class ManagerTests(unittest.TestCase):
     def test_one_worker_and_cleanup_before_delete(self):
-        repository=FakeRepository(); manager=CameraManager(repository, object(), object(), worker_factory=FakeWorker)
-        manager.start(1); first=manager._workers[1]; manager.start(1)
-        self.assertIs(manager._workers[1], first); manager.delete(1)
+        repository=FakeRepository(); manager=CameraManager(repository, FakeMedia(), capture_factory=FakeWorker)
+        manager.start(1); first=manager._captures[1]; manager.start(1)
+        self.assertIs(manager._captures[1], first); manager.delete(1)
         self.assertTrue(first.stopped); self.assertTrue(repository.deleted); self.assertFalse(manager.status(1).running)
 
     def test_stop_returns_without_waiting_for_cleanup(self):
         SlowWorker.cleanup_started.clear(); SlowWorker.cleanup_release.clear()
-        repository=FakeRepository(); manager=CameraManager(repository, object(), object(), worker_factory=SlowWorker)
+        repository=FakeRepository(); manager=CameraManager(repository, FakeMedia(), capture_factory=SlowWorker)
         manager.start(1)
         started=time.monotonic(); status=manager.stop(1); elapsed=time.monotonic()-started
         self.assertLess(elapsed, .2); self.assertFalse(status.running)
-        self.assertNotIn(1, manager._workers)
+        self.assertNotIn(1, manager._captures)
         self.assertTrue(SlowWorker.cleanup_started.wait(.2))
         SlowWorker.cleanup_release.set()
 

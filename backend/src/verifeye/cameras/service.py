@@ -1,7 +1,25 @@
 """Camera use cases; independent from FastAPI and transport details."""
 
+from functools import lru_cache
+from importlib.metadata import distribution
+from pathlib import Path
+
 from .models import InvalidCameraConfiguration
 from .security import validate_rtsp_url
+
+
+@lru_cache(maxsize=1)
+def onvif_wsdl_dir() -> Path:
+    """Resolve onvif-zeep data files without relying on its broken user-install default."""
+    package = distribution("onvif-zeep")
+    for entry in package.files or ():
+        normalized = str(entry).replace("\\", "/")
+        if normalized.endswith("wsdl/devicemgmt.wsdl"):
+            candidate = Path(package.locate_file(entry)).resolve().parent
+            required = ("devicemgmt.wsdl", "media.wsdl", "events.wsdl")
+            if all((candidate / name).is_file() for name in required):
+                return candidate
+    raise RuntimeError("onvif-zeep is installed without its required WSDL files.")
 
 
 class CameraService:
@@ -10,7 +28,7 @@ class CameraService:
         self.onvif_events = onvif_events
     def list(self): return [(camera, self.manager.status(camera.id)) for camera in self.repository.list()]
     def create(self, name, url, enabled=True, source_type="manual", recognition_url=None,
-               onvif_endpoint=None, onvif_username=None, onvif_password=None):
+               onvif_endpoint=None, onvif_username=None, onvif_password=None, user_id=None):
         if not name or not name.strip(): raise InvalidCameraConfiguration("Camera name is required.")
         if source_type not in {"manual", "onvif"}: raise InvalidCameraConfiguration("Camera source must be manual or onvif.")
         try: url = validate_rtsp_url(url)
@@ -19,7 +37,7 @@ class CameraService:
             try: recognition_url = validate_rtsp_url(recognition_url)
             except ValueError as exc: raise InvalidCameraConfiguration(str(exc)) from exc
         camera = self.repository.create(name, url, enabled, source_type, recognition_url,
-                                        onvif_endpoint, onvif_username, onvif_password)
+                                        onvif_endpoint, onvif_username, onvif_password, user_id)
         if enabled: self.manager.start(camera.id)
         if enabled and self.onvif_events: self.onvif_events.start(camera.id)
         return camera, self.manager.status(camera.id)
@@ -63,7 +81,10 @@ class OnvifGateway:
         from urllib.parse import urlsplit
         from onvif import ONVIFCamera
         parsed = urlsplit(endpoint if "://" in endpoint else f"http://{endpoint}")
-        camera = ONVIFCamera(parsed.hostname, parsed.port or 80, username, password)
+        camera = ONVIFCamera(
+            parsed.hostname, parsed.port or 80, username, password,
+            wsdl_dir=str(onvif_wsdl_dir()), no_cache=True,
+        )
         media = camera.create_media_service(); result = []
         for profile in media.GetProfiles():
             uri = media.GetStreamUri({"StreamSetup": {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}}, "ProfileToken": profile.token}).Uri
@@ -75,7 +96,10 @@ class OnvifGateway:
         from urllib.parse import urlsplit
         from onvif import ONVIFCamera
         parsed = urlsplit(endpoint if "://" in endpoint else f"http://{endpoint}")
-        camera = ONVIFCamera(parsed.hostname, parsed.port or 80, username, password)
+        camera = ONVIFCamera(
+            parsed.hostname, parsed.port or 80, username, password,
+            wsdl_dir=str(onvif_wsdl_dir()), no_cache=True,
+        )
         subscription = camera.create_events_service().CreatePullPointSubscription()
         address = subscription.SubscriptionReference.Address
         address = getattr(address, "_value_1", address)

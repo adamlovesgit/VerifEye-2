@@ -62,6 +62,8 @@ class EmbeddingStore:
         schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
         self._connection.executescript(schema)
         camera_columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(cameras)")}
+        identity_columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(identities)")}
+        self.has_identity_user_id = "user_id" in identity_columns
         with self._connection:
             if "recognition_encrypted_url" not in camera_columns:
                 self._connection.execute("ALTER TABLE cameras ADD COLUMN recognition_encrypted_url BLOB")
@@ -81,21 +83,37 @@ class EmbeddingStore:
     def close(self) -> None:
         self._connection.close()
 
-    def upsert_identity(self, external_id: str, display_name: str) -> int:
+    def upsert_identity(self, external_id: str, display_name: str, user_id: int | None = None) -> int:
         if not external_id.strip() or not display_name.strip():
             raise ValueError("external_id and display_name must not be blank")
+        if self.has_identity_user_id and user_id is None:
+            raise ValueError("An authenticated identity owner is required")
         with self._connection:
-            self._connection.execute(
-                """INSERT INTO identities(external_id, display_name)
-                   VALUES (?, ?)
-                   ON CONFLICT(external_id) DO UPDATE SET
-                     display_name = excluded.display_name,
-                     updated_at = CURRENT_TIMESTAMP""",
-                (external_id, display_name),
-            )
+            if self.has_identity_user_id:
+                self._connection.execute(
+                    """INSERT INTO identities(external_id, display_name, user_id)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(external_id) DO UPDATE SET
+                         display_name = excluded.display_name,
+                         updated_at = CURRENT_TIMESTAMP""",
+                    (external_id, display_name, user_id),
+                )
+            else:
+                self._connection.execute(
+                    """INSERT INTO identities(external_id, display_name)
+                       VALUES (?, ?)
+                       ON CONFLICT(external_id) DO UPDATE SET
+                         display_name = excluded.display_name,
+                         updated_at = CURRENT_TIMESTAMP""",
+                    (external_id, display_name),
+                )
             row = self._connection.execute(
-                "SELECT id FROM identities WHERE external_id = ?", (external_id,)
+                "SELECT id FROM identities WHERE external_id = ?" +
+                (" AND user_id = ?" if self.has_identity_user_id else ""),
+                (external_id, user_id) if self.has_identity_user_id else (external_id,),
             ).fetchone()
+        if row is None:
+            raise ValueError("The identity belongs to a different user")
         return int(row["id"])
 
     def add_embedding(
@@ -140,15 +158,21 @@ class EmbeddingStore:
         ).fetchone()
         return self._record(row) if row else None
 
-    def list_identities(self) -> list[IdentityRecord]:
+    def list_identities(self, user_id: int | None = None) -> list[IdentityRecord]:
+        if self.has_identity_user_id and user_id is None:
+            raise ValueError("An authenticated identity owner is required")
         identities = self._connection.execute(
             """SELECT id, external_id, display_name, created_at, updated_at
-               FROM identities ORDER BY display_name COLLATE NOCASE, id"""
+               FROM identities""" + (" WHERE user_id=?" if self.has_identity_user_id else "") +
+            " ORDER BY display_name COLLATE NOCASE, id",
+            (user_id,) if self.has_identity_user_id else (),
         ).fetchall()
         embeddings = self._connection.execute(
             """SELECT e.*, i.external_id, i.display_name
                FROM face_embeddings e JOIN identities i ON i.id = e.identity_id
-               ORDER BY e.created_at DESC, e.id DESC"""
+               """ + ("WHERE i.user_id=? " if self.has_identity_user_id else "") +
+            "ORDER BY e.created_at DESC, e.id DESC",
+            (user_id,) if self.has_identity_user_id else (),
         ).fetchall()
         by_identity: dict[int, list[EmbeddingRecord]] = {}
         for row in embeddings:
@@ -163,13 +187,21 @@ class EmbeddingStore:
             for row in identities
         ]
 
-    def delete_identity(self, identity_id: int) -> list[str]:
+    def delete_identity(self, identity_id: int, user_id: int | None = None) -> list[str]:
+        if self.has_identity_user_id and user_id is None:
+            raise ValueError("An authenticated identity owner is required")
+        owner_clause = " AND user_id=?" if self.has_identity_user_id else ""
+        owner_args = (user_id,) if self.has_identity_user_id else ()
         rows = self._connection.execute(
-            "SELECT source_path FROM face_embeddings WHERE identity_id = ? AND source_path IS NOT NULL",
-            (identity_id,),
+            """SELECT e.source_path FROM face_embeddings e JOIN identities i ON i.id=e.identity_id
+               WHERE e.identity_id = ? AND e.source_path IS NOT NULL""" +
+            (" AND i.user_id=?" if self.has_identity_user_id else ""),
+            (identity_id, *owner_args),
         ).fetchall()
         with self._connection:
-            cursor = self._connection.execute("DELETE FROM identities WHERE id = ?", (identity_id,))
+            cursor = self._connection.execute(
+                "DELETE FROM identities WHERE id = ?" + owner_clause, (identity_id, *owner_args)
+            )
         if cursor.rowcount == 0:
             raise KeyError(identity_id)
         return [str(row["source_path"]) for row in rows]

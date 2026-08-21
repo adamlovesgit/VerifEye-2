@@ -26,7 +26,7 @@ class EnrollmentService:
         target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(contents)
         try:
             with EmbeddingStore(self.database) as store:
-                identity = store.upsert_identity(f"user-{user.id}", user.display_name)
+                identity = store.upsert_identity(f"user-{user.id}", user.display_name, user.id)
                 embedding_id = store.add_embedding(identity, faces[0].embedding, source_path=relative,
                     detection_score=float(faces[0].score), metadata={"original_name": original_name})
         except Exception:

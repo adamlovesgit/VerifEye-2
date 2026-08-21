@@ -9,8 +9,11 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from fastapi import HTTPException
-from verifeye.app import OnvifCredentials, OnvifImport, app, onvif_import, onvif_profiles
-from verifeye.cameras.service import OnvifGateway
+from verifeye.app import (
+    OnvifCredentials, OnvifImport, app, onvif_import, onvif_profiles,
+    sanitized_onvif_endpoint,
+)
+from verifeye.cameras.service import OnvifGateway, onvif_wsdl_dir
 
 
 class FakeOnvifGateway:
@@ -34,8 +37,10 @@ class PullPointAddressTests(unittest.TestCase):
 
         class Camera:
             instance = None
-            def __init__(self, host, port, username, password):
+            def __init__(self, host, port, username, password, wsdl_dir=None, no_cache=False):
                 self.connection = (host, port, username, password)
+                self.wsdl_dir = wsdl_dir
+                self.no_cache = no_cache
                 self.xaddrs = {namespace: "http://camera/stale-subscription"}
                 Camera.instance = self
             def create_events_service(self):
@@ -55,7 +60,15 @@ class PullPointAddressTests(unittest.TestCase):
 
         self.assertIs(result, pullpoint)
         self.assertEqual(Camera.instance.connection, ("camera", 8080, "admin", "secret"))
+        self.assertEqual(Path(Camera.instance.wsdl_dir), onvif_wsdl_dir())
+        self.assertTrue(Camera.instance.no_cache)
         self.assertEqual(Camera.instance.pullpoint_address, "http://camera/new-subscription")
+
+    def test_installed_wsdl_bundle_is_resolved_from_distribution_manifest(self):
+        directory = onvif_wsdl_dir()
+        self.assertTrue((directory / "devicemgmt.wsdl").is_file())
+        self.assertTrue((directory / "media.wsdl").is_file())
+        self.assertTrue((directory / "events.wsdl").is_file())
 
 
 class OnvifProfileRouteTests(unittest.TestCase):
@@ -85,7 +98,7 @@ class OnvifProfileRouteTests(unittest.TestCase):
     def test_import_uses_substream_for_preview_and_main_for_recognition(self):
         previous_cameras = getattr(app.state, "cameras", None)
         captured = []
-        app.state.cameras = SimpleNamespace(create=lambda *args: captured.append(args) or (SimpleNamespace(
+        app.state.cameras = SimpleNamespace(create=lambda *args, **_kwargs: captured.append(args) or (SimpleNamespace(
             id=1, name=args[0], sanitized_host="camera", source_type="onvif", enabled=True, recognition_url=args[4]
         ), SimpleNamespace(
             running=True, connection_state=SimpleNamespace(value="live"), last_frame_at=None, last_error=None,
@@ -97,7 +110,7 @@ class OnvifProfileRouteTests(unittest.TestCase):
             onvif_import(OnvifImport(
                 endpoint="http://camera/onvif/device_service", username="admin", password="correct-password",
                 previewToken="sub", recognitionToken="main", name="Door",
-            ), _user=object())
+            ), _user=SimpleNamespace(id=1))
         finally:
             if previous_cameras is None: del app.state.cameras
             else: app.state.cameras = previous_cameras
@@ -117,6 +130,15 @@ class OnvifProfileRouteTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 502)
         self.assertEqual(raised.exception.detail, "ONVIF authentication or profile lookup failed.")
         self.assertEqual(self.gateway.calls, [(payload.endpoint, payload.username, payload.password)])
+
+    def test_diagnostic_endpoint_removes_all_credentials_and_query_data(self):
+        value = sanitized_onvif_endpoint(
+            "http://admin:camera-password@192.168.1.20:8000/onvif/device_service?token=secret#fragment"
+        )
+        self.assertEqual(value, "http://192.168.1.20:8000/onvif/device_service")
+        self.assertNotIn("admin", value)
+        self.assertNotIn("camera-password", value)
+        self.assertNotIn("secret", value)
 
 
 if __name__ == "__main__":

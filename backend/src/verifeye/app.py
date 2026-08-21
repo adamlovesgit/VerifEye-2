@@ -5,7 +5,9 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import timedelta
 import json
+import logging
 from pathlib import Path
+import re
 import sqlite3
 import threading
 
@@ -15,21 +17,30 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .auth import AuthError, AuthStore, User
-from .cameras import CameraManager, CameraRepository, CameraService, CredentialCipher
+from .cameras import (
+    CameraManager, CameraRepository, CameraService, CredentialCipher, InferenceExecutor,
+    MediaMTXClient, MediaMTXProcess, MediaMTXSource, RecognitionSessionManager,
+)
 from .cameras.models import ActiveCameraLimitReached, CameraError, CameraNotFound, DuplicateCamera, InvalidCameraConfiguration
 from .cameras.service import OnvifGateway
 from .config import Settings
 from .enrollment import EnrollmentError, EnrollmentService
-from .events import EventDispatcher, EventRepository, InvalidEvent, ScreenshotStorage, parse_utc, utcnow
+from .events import (
+    EventDispatcher, EventRepository, InvalidEvent, RecognitionPersistenceSink,
+    ScreenshotStorage, parse_utc, utcnow,
+)
 from .onvif_events import OnvifEventManager
 from .recognition import IdentityMatcher, RecognitionEngine
 from .notifications import NotificationError, NotificationRepository, NotificationWorker, ProviderSettings
+from .request_diagnostics import RequestDiagnostics
 from .storage import EmbeddingStore
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[3]
 FRONTEND_DIR = PROJECT_DIR / "frontend"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+logger = logging.getLogger(__name__)
+request_diagnostics = RequestDiagnostics()
 
 
 class CameraCreate(BaseModel):
@@ -76,6 +87,26 @@ class NotificationTestPayload(BaseModel):
     channel: str
 
 
+class MediaAuthRequest(BaseModel):
+    user: str = ""
+    password: str = ""
+    token: str = ""
+    ip: str = ""
+    action: str
+    path: str = ""
+    protocol: str = ""
+
+
+def sanitized_onvif_endpoint(value: str) -> str:
+    """Return a diagnostic endpoint without credentials, query, or fragment."""
+    from urllib.parse import urlsplit, urlunsplit
+    parsed = urlsplit(value if "://" in value else f"http://{value}")
+    host = parsed.hostname or "unknown-host"
+    if ":" in host: host = f"[{host}]"
+    netloc = f"{host}:{parsed.port}" if parsed.port else host
+    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+
+
 def database_store(request=None) -> EmbeddingStore:
     settings = request.app.state.settings if request else Settings.from_environment()
     return EmbeddingStore(settings.database)
@@ -96,6 +127,7 @@ def session_response(user, token): return {"token": token, "user": user_json(use
 
 
 def camera_json(camera, status):
+    media = getattr(app.state, "media", None)
     return {"id": camera.id, "name": camera.name, "host": camera.sanitized_host, "sourceType": camera.source_type,
             "enabled": camera.enabled, "running": status.running, "connectionState": status.connection_state.value,
             "lastFrameAt": status.last_frame_at, "lastError": status.last_error, "retryAttempt": status.retry_attempt,
@@ -105,37 +137,56 @@ def camera_json(camera, status):
             "recognitionSessionStartedAt": status.recognition_session_started_at,
             "recognitionDeadline": status.recognition_deadline,
             "recognitionMaximumDeadline": status.recognition_maximum_deadline,
-            "recognitionError": status.recognition_error}
+            "recognitionError": status.recognition_error,
+            "previewUrl": media.preview_url(camera.id).url if media else None,
+            "mediaReady": getattr(status, "media_ready", False),
+            "preRollReady": getattr(status, "pre_roll_ready", False),
+            "preRollLastFrameAt": getattr(status, "pre_roll_last_frame_at", None),
+            "preRollError": getattr(status, "pre_roll_error", None)}
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     settings = Settings.from_environment(); settings.validate()
+    logger.info("VerifEye database: %s", settings.database.resolve())
     cipher = CredentialCipher(settings.camera_key)  # deliberately fails startup for missing/invalid key
     with EmbeddingStore(settings.database): pass
     repository = CameraRepository(settings.database, cipher)
+    media_client = MediaMTXClient(settings.mediamtx_api_url)
+    media_process = MediaMTXProcess(
+        PROJECT_DIR / "backend" / "vendor" / "mediamtx" / "1.19.3",
+        settings.mediamtx_runtime_dir, media_client,
+        settings.mediamtx_rtsp_url, settings.mediamtx_whep_url,
+    )
+    media = MediaMTXSource(media_client, media_process, settings.mediamtx_rtsp_url, settings.mediamtx_whep_url)
     engine = RecognitionEngine(settings.model_path)
     matcher = IdentityMatcher(settings.database, settings.similarity_threshold)
-    manager = CameraManager(repository, engine, matcher, settings.recognition_fps, settings.rtsp_timeout_seconds,
-                            settings.cleanup_timeout_seconds, settings.max_active_cameras,
-                            pre_roll_seconds=settings.pre_roll_seconds,
-                            recognition_window_seconds=settings.recognition_window_seconds,
-                            max_session_seconds=settings.max_recognition_session_seconds,
-                            pre_roll_max_frames=settings.pre_roll_max_frames,
-                            preview_fps=settings.preview_fps)
+    manager = CameraManager(
+        repository, media, settings.pre_roll_fps, settings.rtsp_timeout_seconds,
+        settings.cleanup_timeout_seconds, settings.max_active_cameras,
+        pre_roll_seconds=settings.pre_roll_seconds, pre_roll_max_frames=settings.pre_roll_max_frames,
+        preview_fps=settings.preview_fps,
+    )
     event_repository = EventRepository(settings.database, settings.sqlite_busy_timeout_ms)
     screenshots = ScreenshotStorage(settings.event_screenshot_dir)
     event_repository.reconcile()
     screenshots.cleanup_orphans(event_repository.referenced_paths())
+    sink = RecognitionPersistenceSink(event_repository, screenshots)
+    sessions = RecognitionSessionManager(
+        repository, manager, media, InferenceExecutor(engine, matcher), sink,
+        settings.recognition_fps, settings.rtsp_timeout_seconds,
+    )
+    manager.bind_sessions(sessions)
     dispatcher = EventDispatcher(
-        event_repository, manager, settings.pre_roll_seconds, settings.recognition_window_seconds,
+        event_repository, sessions, settings.pre_roll_seconds, settings.recognition_window_seconds,
         settings.max_recognition_session_seconds, settings.event_dispatch_lease_seconds,
         settings.event_dispatch_max_attempts, screenshot_storage=screenshots,
         no_face_retention_days=settings.motion_no_face_retention_days,
         unrecognized_retention_days=settings.motion_unrecognized_retention_days,
     )
     application.state.settings, application.state.engine = settings, engine
-    application.state.manager = manager
+    application.state.manager, application.state.media = manager, media
+    application.state.media_process, application.state.sessions = media_process, sessions
     application.state.onvif = OnvifGateway()
     onvif_events = OnvifEventManager(
         repository, event_repository, application.state.onvif,
@@ -153,17 +204,21 @@ async def lifespan(application: FastAPI):
     )
     notifications = NotificationRepository(settings.database, settings.sqlite_busy_timeout_ms)
     notification_worker = NotificationWorker(notifications, providers, settings.event_screenshot_dir)
-    dispatcher.notification_callback = lambda session_id: notifications.enqueue_session(session_id, providers.public_base_url)
+    sink.notification_callback = lambda session_id: notifications.enqueue_session(session_id, providers.public_base_url)
     application.state.notifications, application.state.notification_providers = notifications, providers
     application.state.notification_worker = notification_worker
     try:
+        media_process.start()
+        media.reconcile(repository.list())
+        media_process.on_ready = lambda: media.reconcile(repository.list())
         manager.start_enabled()
         onvif_events.start_enabled()
         dispatcher.start()
         notification_worker.start()
         yield
     finally:
-        onvif_events.shutdown(); dispatcher.stop(); notification_worker.stop(); manager.shutdown(); engine.close()
+        onvif_events.shutdown(); dispatcher.stop(); notification_worker.stop(); manager.shutdown()
+        media_process.stop(); engine.close()
 
 
 app = FastAPI(title="VerifEye", version="0.2.0", lifespan=lifespan)
@@ -171,13 +226,21 @@ app.mount("/assets", StaticFiles(directory=FRONTEND_DIR), name="assets")
 
 
 @app.middleware("http")
-async def disable_frontend_cache(request, call_next):
-    response = await call_next(request)
-    if request.url.path == "/" or request.url.path.startswith("/assets/"):
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-    return response
+async def diagnose_requests_and_disable_frontend_cache(request, call_next):
+    diagnostic, timer = request_diagnostics.begin(request.method, request.url.path)
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = diagnostic.request_id
+        if request.url.path == "/" or request.url.path.startswith("/assets/"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        request_diagnostics.finish(diagnostic, timer, response.status_code)
+        return response
+    except BaseException:
+        request_diagnostics.finish(diagnostic, timer, None, failed=True)
+        raise
+
 
 
 @app.exception_handler(CameraError)
@@ -189,6 +252,31 @@ async def camera_error(_request, exc):
 
 @app.get("/", include_in_schema=False)
 def index(): return FileResponse(FRONTEND_DIR / "index.html")
+
+
+@app.post("/internal/media-auth", include_in_schema=False)
+def media_auth(payload: MediaAuthRequest):
+    """Delegate MediaMTX reads to existing VerifEye authorization state."""
+    match = re.fullmatch(r"verifeye-camera-(\d+)-(preview|recognition)", payload.path)
+    if payload.action != "read" or match is None:
+        raise HTTPException(401, "Media read is not authorized.")
+    camera_id, role = int(match.group(1)), match.group(2)
+    try:
+        camera = app.state.cameras.repository.get(camera_id)
+    except CameraNotFound as exc:
+        raise HTTPException(401, "Media read is not authorized.") from exc
+    if not camera.enabled or (role == "recognition" and not camera.recognition_url):
+        raise HTTPException(401, "Media read is not authorized.")
+    loopback = payload.ip == "::1" or payload.ip.startswith("127.")
+    if payload.protocol == "rtsp" and loopback:
+        return Response(status_code=204)
+    if payload.protocol != "webrtc" or role != "preview" or not payload.token:
+        raise HTTPException(401, "Media read is not authorized.")
+    with EmbeddingStore(app.state.settings.database) as store:
+        user = AuthStore(store._connection).user_for_session(payload.token)
+    if user is None:
+        raise HTTPException(401, "Media read is not authorized.")
+    return Response(status_code=204)
 
 
 @app.post("/api/auth/register", status_code=201)
@@ -241,13 +329,13 @@ def list_identities(_user=Depends(current_user)):
         return [{"id": identity.id, "externalId": identity.external_id, "displayName": identity.display_name,
                  "createdAt": identity.created_at, "updatedAt": identity.updated_at,
                  "embeddings": [embedding_json(item) for item in identity.embeddings]}
-                for identity in store.list_identities()]
+                for identity in store.list_identities(_user.id)]
 
 
 @app.delete("/api/identities/{identity_id}", status_code=204)
 def delete_identity(identity_id: int, _user=Depends(current_user)):
     with EmbeddingStore(app.state.settings.database) as store:
-        try: source_paths = store.delete_identity(identity_id)
+        try: source_paths = store.delete_identity(identity_id, _user.id)
         except KeyError as exc: raise HTTPException(404, "Identity not found.") from exc
     upload_dir = Path(app.state.settings.upload_dir).resolve()
     for source_path in source_paths:
@@ -258,7 +346,7 @@ def delete_identity(identity_id: int, _user=Depends(current_user)):
 
 @app.get("/api/notification-settings")
 def notification_settings(_user=Depends(current_user)):
-    value = app.state.notifications.settings()
+    value = app.state.notifications.settings(_user.id)
     providers = app.state.notification_providers
     value["providers"] = {"email": {"ready": providers.email_ready}, "sms": {"ready": providers.sms_ready}}
     return value
@@ -270,21 +358,21 @@ def notification_payload(payload: NotificationRulePayload) -> dict:
 
 @app.post("/api/notification-rules", status_code=201)
 def create_notification_rule(payload: NotificationRulePayload, _user=Depends(current_user)):
-    try: rule_id = app.state.notifications.save_rule(notification_payload(payload))
+    try: rule_id = app.state.notifications.save_rule(notification_payload(payload), user_id=_user.id)
     except NotificationError as exc: raise HTTPException(422, str(exc)) from exc
     return {"id": rule_id}
 
 
 @app.put("/api/notification-rules/{rule_id}")
 def update_notification_rule(rule_id: int, payload: NotificationRulePayload, _user=Depends(current_user)):
-    try: app.state.notifications.save_rule(notification_payload(payload), rule_id)
+    try: app.state.notifications.save_rule(notification_payload(payload), rule_id, _user.id)
     except NotificationError as exc: raise HTTPException(409 if "changed elsewhere" in str(exc) else 422, str(exc)) from exc
     return {"id": rule_id}
 
 
 @app.delete("/api/notification-rules/{rule_id}", status_code=204)
 def delete_notification_rule(rule_id: int, _user=Depends(current_user)):
-    if not app.state.notifications.delete_rule(rule_id): raise HTTPException(404, "Notification rule not found.")
+    if not app.state.notifications.delete_rule(rule_id, _user.id): raise HTTPException(404, "Notification rule not found.")
     return Response(status_code=204)
 
 
@@ -293,7 +381,9 @@ def test_notification(payload: NotificationTestPayload, _user=Depends(current_us
     providers = app.state.notification_providers
     if payload.channel == "email" and not providers.email_ready: raise HTTPException(409, "SMTP provider is not configured.")
     if payload.channel == "sms" and not providers.sms_ready: raise HTTPException(409, "Twilio provider is not configured.")
-    try: delivery_id = app.state.notifications.enqueue_test(payload.rule_id, payload.channel, providers.public_base_url)
+    try: delivery_id = app.state.notifications.enqueue_test(
+        payload.rule_id, payload.channel, providers.public_base_url, _user.id
+    )
     except NotificationError as exc: raise HTTPException(422, str(exc)) from exc
     return {"id": delivery_id, "status": "queued"}
 
@@ -304,7 +394,7 @@ def notification_deliveries(limit: int = 50, offset: int = 0, status: str | None
     if not 1 <= limit <= 200 or offset < 0: raise HTTPException(422, "Invalid pagination.")
     if status and status not in {"queued","claimed","retrying","sent","failed"}: raise HTTPException(422, "Invalid status filter.")
     if channel and channel not in {"email","sms"}: raise HTTPException(422, "Invalid channel filter.")
-    return app.state.notifications.deliveries(limit, offset, status, channel)
+    return app.state.notifications.deliveries(limit, offset, status, channel, _user.id)
 
 
 @app.get("/api/cameras")
@@ -313,7 +403,10 @@ def list_cameras(_user=Depends(current_user)): return [camera_json(*item) for it
 
 @app.post("/api/cameras", status_code=201)
 def create_camera(payload: CameraCreate, _user=Depends(current_user)):
-    return camera_json(*app.state.cameras.create(payload.name, payload.url, payload.enabled, payload.sourceType, payload.recognition_url))
+    return camera_json(*app.state.cameras.create(
+        payload.name, payload.url, payload.enabled, payload.sourceType,
+        payload.recognition_url, user_id=_user.id,
+    ))
 
 
 @app.patch("/api/cameras/{camera_id}")
@@ -491,7 +584,12 @@ def discover_onvif(_user=Depends(current_user)): return app.state.onvif.discover
 @app.post("/api/onvif/profiles")
 def onvif_profiles(payload: OnvifCredentials, _user=Depends(current_user)):
     try: return [{"token": item["token"], "name": item["name"]} for item in app.state.onvif.profiles(payload.endpoint, payload.username, payload.password)]
-    except Exception as exc: raise HTTPException(502, "ONVIF authentication or profile lookup failed.") from exc
+    except Exception as exc:
+        logger.exception(
+            "ONVIF profile lookup failed for %s (%s)",
+            sanitized_onvif_endpoint(payload.endpoint), type(exc).__name__,
+        )
+        raise HTTPException(502, "ONVIF authentication or profile lookup failed.") from exc
 
 @app.post("/api/onvif/import", status_code=201)
 def onvif_import(payload: OnvifImport, _user=Depends(current_user)):
@@ -511,8 +609,14 @@ def onvif_import(payload: OnvifImport, _user=Depends(current_user)):
             payload.name, authenticated_url(preview), True, "onvif",
             authenticated_url(recognition) if recognition else None,
             payload.endpoint, payload.username, payload.password,
+            user_id=_user.id,
         )
         return camera_json(*created)
     except StopIteration as exc: raise HTTPException(400, "The selected ONVIF profile no longer exists.") from exc
     except CameraError: raise
-    except Exception as exc: raise HTTPException(502, "ONVIF camera import failed.") from exc
+    except Exception as exc:
+        logger.exception(
+            "ONVIF camera import failed for %s (%s)",
+            sanitized_onvif_endpoint(payload.endpoint), type(exc).__name__,
+        )
+        raise HTTPException(502, "ONVIF camera import failed.") from exc

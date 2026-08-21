@@ -90,6 +90,13 @@ $env:PYTHONPATH = "backend/src"
 python -m uvicorn verifeye.app:app --reload
 ```
 
+Every HTTP request is logged with a request ID, method, path, status, and
+elapsed time. If a request is still running after 10 seconds, VerifEye logs the
+active requests and dumps every Python thread stack to the server console. Set
+`VERIFEYE_SLOW_REQUEST_SECONDS` before startup to change the threshold, or set
+it to `0` to disable slow-request stack dumps. Request bodies and query strings
+are intentionally excluded from these diagnostics.
+
 Then open `http://127.0.0.1:8000`. The recognition model defaults to
 `~/.insightface/models/buffalo_l/w600k_r50.onnx`. Set
 `VERIFEYE_MODEL_PATH` before starting the server if it is stored elsewhere.
@@ -97,13 +104,22 @@ Then open `http://127.0.0.1:8000`. The recognition model defaults to
 Uploaded enrollment photos stay under `backend/data/enrollments`; the image
 and its normalized embedding are never sent to a cloud service.
 
-## Live RTSP recognition
+## Live camera media and recognition
 
-VerifEye can supervise up to four enabled RTSP cameras by default. Recognition
-runs in the backend even when no browser is open. Every camera keeps one newest
-decoded frame and one latest annotated JPEG, so slow inference or viewers do not
-build a latency-producing queue. MJPEG feeds and all camera controls require an
-authenticated VerifEye session.
+VerifEye supervises up to four enabled RTSP cameras by default. The bundled,
+SHA-256-verified MediaMTX 1.19.3 process owns the only camera-side pull of each
+lightweight preview stream. Browser H.264/WHEP playback and the backend
+`PreRollCapture` decoder are independent downstream readers of that same
+`verifeye-camera-{id}-preview` path. In particular, pre-roll does not open the
+camera URL or create a second lightweight path.
+
+Each enabled camera has one continuous, bounded pre-roll decoder. Recognition
+runs only for durable recognition sessions: it either opens one temporary
+distinct/main-stream decoder, shares new pre-roll samples when no distinct
+stream is configured, or falls back once to those samples if the distinct
+stream fails. A failed distinct stream is not retried until the next session.
+ONVIF PullPoint ingestion and durable event dispatch continue while MediaMTX or
+a decoder is temporarily unavailable.
 
 Generate and securely back up a camera-credential encryption key before
 starting the application:
@@ -121,8 +137,11 @@ the network. Wired and Wi-Fi cameras are equivalent to VerifEye; the host only
 needs a routable LAN connection to the endpoint. Firewall rules, client
 isolation, weak Wi-Fi, and packet loss appear as connection failures or retries.
 
-Streams use FFmpeg/PyAV over RTSP/TCP. Actual codec compatibility depends on the
-installed FFmpeg build. The recognition threshold defaults to a provisional
+Backend decoders use FFmpeg/PyAV over loopback RTSP/TCP; browsers use the
+vendored MediaMTX 1.19.3 WHEP reader and their existing VerifEye bearer. The
+private MediaMTX auth callback delegates to existing VerifEye sessions and does
+not maintain separate media credentials. Actual codec compatibility depends on
+the installed FFmpeg and browser builds. The recognition threshold defaults to a provisional
 `0.40`; validate it against a representative labeled golden set before treating
 it as a production decision. A golden-set NPZ must contain `embeddings` (`N x D`)
 and matching `labels` (`N`); evaluate it with:
@@ -136,11 +155,16 @@ The dependency direction is deliberately one-way:
 `HTTP routes -> application services -> domain ports <- infrastructure adapters`
 
 Routes do not decode video, invoke recognition models, query camera tables, or
-own worker threads. The process-wide camera manager owns one worker per active
-camera; workers own their RTSP sources and detectors; the process-wide
-recognition engine exclusively owns ArcFace. Stop, delete, and shutdown close
-sources, clear buffers, join workers, and only then release shared recognition
-resources.
+own worker threads. `CameraManager` owns provisioning and pre-roll lifecycle;
+`RecognitionSessionManager` owns mode selection and monotonic session timing;
+`InferenceExecutor` owns per-session detection and access to the single
+process-wide ArcFace engine. Stop, delete, and shutdown close sources, clear
+buffers, join workers, and only then release shared recognition resources.
+
+An initial MediaMTX extraction, version, or Control API health failure aborts
+startup. A later child-process exit instead marks camera media unavailable while
+the API, ONVIF ingestion, and durable state stay online; the supervisor retries
+with bounded monotonic backoff and reconciles paths after recovery.
 
 For an opt-in test against real hardware (no frames are saved):
 
@@ -150,13 +174,29 @@ python backend/tests/integration/live_camera.py --seconds 10
 ```
 
 Optional tuning variables are `VERIFEYE_RECOGNITION_FPS`, `VERIFEYE_PREVIEW_FPS`,
-`VERIFEYE_SIMILARITY_THRESHOLD`, `VERIFEYE_FRAME_FRESHNESS_SECONDS`,
+`VERIFEYE_PRE_ROLL_FPS`, `VERIFEYE_SIMILARITY_THRESHOLD`, `VERIFEYE_FRAME_FRESHNESS_SECONDS`,
 `VERIFEYE_RTSP_TIMEOUT_SECONDS`, `VERIFEYE_CLEANUP_TIMEOUT_SECONDS`, and
 `VERIFEYE_MAX_ACTIVE_CAMERAS`. ONVIF motion handling can be tuned with
 `VERIFEYE_ONVIF_MOTION_COOLDOWN_SECONDS` (default `20`),
 `VERIFEYE_MOTION_NO_FACE_RETENTION_DAYS` (default `7`), and
 `VERIFEYE_MOTION_UNRECOGNIZED_RETENTION_DAYS` (default `30`). Recognized motion
 events are retained.
+
+The legacy MJPEG endpoint, JPEG publisher, and preview-FPS setting remain as a
+temporary compatibility cutover. They are intentionally removed together only
+after the documented one-camera WHEP + pre-roll + ONVIF + recognition + overlap
+acceptance run passes. The dashboard already uses WHEP.
+
+The pinned Control API subprocess contract and the two-browser source invariant
+are opt-in integration checks:
+
+```powershell
+$env:VERIFEYE_RUN_MEDIAMTX_CONTRACT = "1"
+python -m unittest backend.tests.integration.test_mediamtx_contract
+
+# Requires Playwright Chromium, a running VerifEye instance, and an enabled camera.
+python backend/tests/integration/mediamtx_multi_browser.py --camera-id 1 --token "existing-session-token"
+```
 
 ## Email and SMS notifications
 

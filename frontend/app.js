@@ -153,6 +153,36 @@ async function renderMjpeg(cameraId, image) {
   finally { if (state.streamStops.get(cameraId) === stop) state.streamStops.delete(cameraId); }
 }
 
+function renderWhep(camera, video, badge) {
+  state.streamStops.get(camera.id)?.();
+  let reader = null, stopped = false;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    reader?.close(); reader = null;
+    video.pause(); video.srcObject = null;
+  };
+  state.streamStops.set(camera.id, stop);
+  if (!camera.previewUrl || !window.MediaMTXWebRTCReader) {
+    badge.className = "stream-state state-offline"; badge.textContent = "Preview unavailable";
+    return;
+  }
+  reader = new window.MediaMTXWebRTCReader({
+    url: camera.previewUrl,
+    token: state.token,
+    onTrack: event => {
+      if (stopped) return;
+      video.srcObject = event.streams[0] || new MediaStream([event.track]);
+      video.play().catch(() => {});
+      badge.className = "stream-state state-live"; badge.textContent = "Live";
+    },
+    onError: () => {
+      if (stopped) return;
+      badge.className = "stream-state state-retrying"; badge.textContent = "Reconnecting";
+    },
+  });
+}
+
 async function triggerTestRecognition(camera, button) {
   button.disabled = true;
   const original = button.textContent;
@@ -198,7 +228,7 @@ async function loadCameras() {
     for (const camera of cameras) {
       const card = document.createElement("article");
       card.className = "camera-card"; card.dataset.cameraId = camera.id;
-      card.innerHTML = `<div class="camera-video"><img alt="Live recognition"><div class="stream-state state-${camera.connectionState}">${statusText(camera)}</div>${camera.running?'<button class="stream-stop" type="button" aria-label="Turn off camera stream">Turn off</button>':""}</div><div class="camera-meta"><div><strong></strong><small></small></div><div class="camera-actions"><button class="ghost recognize-test">Test recognition</button><button class="ghost edit">Edit</button><button class="ghost toggle"></button><button class="ghost remove">Delete</button></div></div>`;
+      card.innerHTML = `<div class="camera-video"><video aria-label="Live camera preview" autoplay muted playsinline></video><div class="stream-state state-${camera.connectionState}">${statusText(camera)}</div>${camera.running?'<button class="stream-stop" type="button" aria-label="Turn off camera stream">Turn off</button>':""}</div><div class="camera-meta"><div><strong></strong><small></small></div><div class="camera-actions"><button class="ghost recognize-test">Test recognition</button><button class="ghost edit">Edit</button><button class="ghost toggle"></button><button class="ghost remove">Delete</button></div></div>`;
       card.querySelector("strong").textContent = camera.name;
       card.querySelector("small").textContent = camera.host;
       const test = card.querySelector(".recognize-test");
@@ -228,7 +258,7 @@ async function loadCameras() {
         await api(`/api/cameras/${camera.id}`, {method:"DELETE"}); loadCameras();
       };
       list.appendChild(card);
-      if (camera.running && !state.streamStops.has(camera.id)) renderMjpeg(camera.id, card.querySelector("img"));
+      if (camera.running && !state.streamStops.has(camera.id)) renderWhep(camera, card.querySelector("video"), card.querySelector(".stream-state"));
     }
   } catch (error) {
     if (error.name !== "AbortError" && generation === state.cameraLoadGeneration) $("#camera-error").textContent = error.message;
@@ -282,7 +312,9 @@ async function expandEvent(card, eventId, button) {
     if (event.screenshots.length) {
       const images = document.createElement("div"); images.className = "event-screenshots";
       for (const shot of event.screenshots) {
-        const link = document.createElement("a"); link.href = shot.contentPath; link.target = "_blank"; link.rel = "noopener";
+        const link = document.createElement("a");
+        link.href = `/assets/image-viewer.html?id=${encodeURIComponent(shot.id)}`;
+        link.target = "_blank"; link.rel = "noopener";
         link.textContent = `${eventStateLabel(shot.role)} image`; images.appendChild(link);
       }
       detail.appendChild(images);

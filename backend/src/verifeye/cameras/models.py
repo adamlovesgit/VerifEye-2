@@ -57,6 +57,10 @@ class CameraStatus:
     recognition_deadline: float | None = None
     recognition_maximum_deadline: float | None = None
     recognition_error: str | None = None
+    media_ready: bool = False
+    pre_roll_ready: bool = False
+    pre_roll_last_frame_at: float | None = None
+    pre_roll_error: str | None = None
 
 
 @dataclass(frozen=True)
