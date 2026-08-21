@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from verifeye.auth import AuthError, AuthStore  # noqa: E402
+from verifeye.auth import AuthError, AuthStore, SetupComplete  # noqa: E402
 from verifeye.storage import EmbeddingStore  # noqa: E402
 
 
@@ -45,6 +45,43 @@ class AuthStoreTests(unittest.TestCase):
         token = self.auth.create_session(user.id)
         self.auth.delete_session(token)
         self.assertIsNone(self.auth.user_for_session(token))
+
+    def test_initial_setup_creates_one_administrator(self) -> None:
+        self.assertTrue(self.auth.setup_required())
+        user = self.auth.create_initial_admin("owner@example.com", "Owner", "password123")
+        self.assertEqual(user.role, "admin")
+        self.assertFalse(self.auth.setup_required())
+        with self.assertRaises(SetupComplete):
+            self.auth.create_initial_admin("other@example.com", "Other", "password123")
+
+    def test_guest_rotation_invalidates_sessions_and_preserves_one_guest(self) -> None:
+        guest = self.auth.replace_guest("guest@example.com", "Guest", "password123")
+        token = self.auth.create_session(guest.id)
+        rotated = self.auth.replace_guest("viewer@example.com", "Viewer", "new-password")
+        self.assertEqual(rotated.id, guest.id)
+        self.assertIsNone(self.auth.user_for_session(token))
+        self.assertEqual(self.auth.authenticate("viewer@example.com", "new-password").role, "guest")
+        self.assertEqual(
+            self.store._connection.execute("SELECT count(*) FROM users WHERE role='guest'").fetchone()[0],
+            1,
+        )
+
+    def test_guest_revocation_deletes_account_and_sessions(self) -> None:
+        guest = self.auth.replace_guest("guest@example.com", "Guest", "password123")
+        token = self.auth.create_session(guest.id)
+        self.assertTrue(self.auth.revoke_guest())
+        self.assertFalse(self.auth.revoke_guest())
+        self.assertIsNone(self.auth.user_for_session(token))
+
+    def test_administrator_password_recovery_revokes_sessions(self) -> None:
+        admin = self.auth.create_initial_admin("owner@example.com", "Owner", "password123")
+        token = self.auth.create_session(admin.id)
+        recovered = self.auth.reset_admin_password("replacement-password")
+        self.assertEqual(recovered, admin)
+        self.assertIsNone(self.auth.user_for_session(token))
+        self.assertEqual(
+            self.auth.authenticate("owner@example.com", "replacement-password"), admin
+        )
 
 
 if __name__ == "__main__":

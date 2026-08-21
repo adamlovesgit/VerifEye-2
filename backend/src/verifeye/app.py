@@ -10,14 +10,15 @@ from pathlib import Path
 import re
 import sqlite3
 import threading
+import time
 from typing import Literal
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from .auth import AuthError, AuthStore, User
+from .auth import AuthError, AuthStore, SetupComplete, User
 from .cameras import (
     CameraManager, CameraRepository, CameraService, CredentialCipher, InferenceExecutor,
     MediaMTXClient, MediaMTXProcess, MediaMTXSource, RecognitionSessionManager,
@@ -42,6 +43,33 @@ FRONTEND_DIR = PROJECT_DIR / "frontend"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 logger = logging.getLogger(__name__)
 request_diagnostics = RequestDiagnostics()
+
+
+class LoginRateLimiter:
+    def __init__(self, maximum_attempts: int = 5, window_seconds: int = 60) -> None:
+        self.maximum_attempts, self.window_seconds = maximum_attempts, window_seconds
+        self._failures: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def check(self, key: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            recent = [value for value in self._failures.get(key, []) if now - value < self.window_seconds]
+            self._failures[key] = recent
+            if len(recent) >= self.maximum_attempts:
+                retry_after = max(1, int(self.window_seconds - (now - recent[0])))
+                raise HTTPException(429, "Too many sign-in attempts. Try again shortly.", headers={"Retry-After": str(retry_after)})
+
+    def failed(self, key: str) -> None:
+        with self._lock:
+            self._failures.setdefault(key, []).append(time.monotonic())
+
+    def succeeded(self, key: str) -> None:
+        with self._lock:
+            self._failures.pop(key, None)
+
+
+login_rate_limiter = LoginRateLimiter()
 
 
 class CameraCreate(BaseModel):
@@ -99,6 +127,12 @@ class MediaAuthRequest(BaseModel):
     protocol: str = ""
 
 
+class GuestCredentials(BaseModel):
+    email: str = Field(max_length=254)
+    display_name: str = Field(alias="displayName", min_length=1, max_length=100)
+    password: str = Field(min_length=8, max_length=1024)
+
+
 def sanitized_onvif_endpoint(value: str) -> str:
     """Return a diagnostic endpoint without credentials, query, or fragment."""
     from urllib.parse import urlsplit, urlunsplit
@@ -114,7 +148,7 @@ def database_store(request=None) -> EmbeddingStore:
     return EmbeddingStore(settings.database)
 
 
-def current_user(authorization: str | None = Header(default=None)) -> User:
+def authenticated_user(authorization: str | None = Header(default=None)) -> User:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Sign in to continue.")
     settings = app.state.settings if hasattr(app.state, "settings") else Settings.from_environment()
@@ -124,7 +158,13 @@ def current_user(authorization: str | None = Header(default=None)) -> User:
     return user
 
 
-def user_json(user): return {"id": user.id, "email": user.email, "displayName": user.display_name}
+def current_user(user: User = Depends(authenticated_user)) -> User:
+    if user.role != "admin":
+        raise HTTPException(403, "Administrator access is required.")
+    return user
+
+
+def user_json(user): return {"id": user.id, "email": user.email, "displayName": user.display_name, "role": user.role}
 def session_response(user, token): return {"token": token, "user": user_json(user)}
 
 
@@ -145,6 +185,15 @@ def camera_json(camera, status):
             "preRollReady": getattr(status, "pre_roll_ready", False),
             "preRollLastFrameAt": getattr(status, "pre_roll_last_frame_at", None),
             "preRollError": getattr(status, "pre_roll_error", None)}
+
+
+def guest_camera_json(camera, status):
+    return {
+        "id": camera.id,
+        "name": camera.name,
+        "connectionState": status.connection_state.value,
+        "previewAvailable": bool(camera.enabled and status.running),
+    }
 
 
 @asynccontextmanager
@@ -233,7 +282,7 @@ async def diagnose_requests_and_disable_frontend_cache(request, call_next):
     try:
         response = await call_next(request)
         response.headers["X-Request-ID"] = diagnostic.request_id
-        if request.url.path == "/" or request.url.path.startswith("/assets/"):
+        if request.url.path in {"/", "/guest/cameras"} or request.url.path.startswith("/assets/"):
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
@@ -256,6 +305,10 @@ async def camera_error(_request, exc):
 def index(): return FileResponse(FRONTEND_DIR / "index.html")
 
 
+@app.get("/guest/cameras", include_in_schema=False)
+def guest_index(): return FileResponse(FRONTEND_DIR / "index.html")
+
+
 @app.post("/internal/media-auth", include_in_schema=False)
 def media_auth(payload: MediaAuthRequest):
     """Delegate MediaMTX reads to existing VerifEye authorization state."""
@@ -275,38 +328,96 @@ def media_auth(payload: MediaAuthRequest):
     if payload.protocol != "webrtc" or role != "preview" or not payload.token:
         raise HTTPException(401, "Media read is not authorized.")
     with EmbeddingStore(app.state.settings.database) as store:
-        user = AuthStore(store._connection).user_for_session(payload.token)
-    if user is None:
+        auth = AuthStore(store._connection)
+        user = auth.user_for_session(payload.token)
+        authorized = bool(user and user.role == "admin") or bool(
+            auth.user_for_preview_grant(payload.token, camera_id)
+        )
+    if not authorized:
         raise HTTPException(401, "Media read is not authorized.")
     return Response(status_code=204)
+
+
+@app.get("/api/auth/setup")
+def setup_status():
+    with EmbeddingStore(app.state.settings.database) as store:
+        return {"setupRequired": AuthStore(store._connection).setup_required()}
 
 
 @app.post("/api/auth/register", status_code=201)
 def register(payload: dict):
     try:
         with EmbeddingStore(app.state.settings.database) as store:
-            auth = AuthStore(store._connection); user = auth.create_user(str(payload.get("email", "")), str(payload.get("displayName", "")), str(payload.get("password", ""))); token = auth.create_session(user.id)
+            auth = AuthStore(store._connection); user = auth.create_initial_admin(str(payload.get("email", "")), str(payload.get("displayName", "")), str(payload.get("password", ""))); token = auth.create_session(user.id)
+    except SetupComplete as exc: raise HTTPException(409, str(exc)) from exc
     except AuthError as exc: raise HTTPException(400, str(exc)) from exc
     return session_response(user, token)
 
 
 @app.post("/api/auth/login")
-def login(payload: dict):
+def login(payload: dict, request: Request):
+    client_key = request.client.host if request.client else "unknown"
+    login_rate_limiter.check(client_key)
     try:
         with EmbeddingStore(app.state.settings.database) as store:
             auth = AuthStore(store._connection); user = auth.authenticate(str(payload.get("email", "")), str(payload.get("password", ""))); token = auth.create_session(user.id)
-    except AuthError as exc: raise HTTPException(401, str(exc)) from exc
+    except AuthError as exc:
+        login_rate_limiter.failed(client_key)
+        raise HTTPException(401, str(exc)) from exc
+    login_rate_limiter.succeeded(client_key)
     return session_response(user, token)
 
 
 @app.get("/api/auth/me")
-def me(user=Depends(current_user)): return user_json(user)
+def me(user=Depends(authenticated_user)): return user_json(user)
 
 
 @app.post("/api/auth/logout", status_code=204, response_class=Response)
-def logout(authorization: str = Header(), _user=Depends(current_user)):
+def logout(authorization: str = Header(), _user=Depends(authenticated_user)):
     with EmbeddingStore(app.state.settings.database) as store: AuthStore(store._connection).delete_session(authorization[7:])
     return Response(status_code=204)
+
+
+@app.get("/api/admin/guest")
+def get_guest(_user=Depends(current_user)):
+    with EmbeddingStore(app.state.settings.database) as store:
+        guest = AuthStore(store._connection).guest()
+    return {"configured": guest is not None, "guest": user_json(guest) if guest else None}
+
+
+@app.put("/api/admin/guest")
+def put_guest(payload: GuestCredentials, _user=Depends(current_user)):
+    try:
+        with EmbeddingStore(app.state.settings.database) as store:
+            guest = AuthStore(store._connection).replace_guest(
+                payload.email, payload.display_name, payload.password
+            )
+    except AuthError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"configured": True, "guest": user_json(guest)}
+
+
+@app.delete("/api/admin/guest", status_code=204)
+def delete_guest(_user=Depends(current_user)):
+    with EmbeddingStore(app.state.settings.database) as store:
+        AuthStore(store._connection).revoke_guest()
+    return Response(status_code=204)
+
+
+@app.get("/api/guest/cameras")
+def list_guest_cameras(_user=Depends(authenticated_user)):
+    return [guest_camera_json(*item) for item in app.state.cameras.list()]
+
+
+@app.post("/api/guest/cameras/{camera_id}/preview-authorization")
+def authorize_guest_preview(camera_id: int, user=Depends(authenticated_user)):
+    camera = app.state.cameras.repository.get(camera_id)
+    status = app.state.manager.status(camera_id)
+    if not camera.enabled or not status.running:
+        raise HTTPException(409, "Camera preview is unavailable.")
+    with EmbeddingStore(app.state.settings.database) as store:
+        token = AuthStore(store._connection).create_preview_grant(user.id, camera_id)
+    return {"url": app.state.media.preview_url(camera_id).url, "token": token, "expiresIn": 90}
 
 
 @app.post("/api/enroll", status_code=201)

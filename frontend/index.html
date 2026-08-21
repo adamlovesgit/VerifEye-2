@@ -19,13 +19,14 @@
   <link rel="stylesheet" href="/assets/events.css?v=phase2-events-2">
   <link rel="stylesheet" href="/assets/notifications.css?v=notifications-3">
   <link rel="stylesheet" href="/assets/webrtc.css?v=1">
+  <link rel="stylesheet" href="/assets/guest.css?v=1">
   <script src="/assets/mediamtx-reader.js?v=1.19.3" defer></script>
-  <script src="/assets/app.js?v=session-alert-rules-1" defer></script>
+  <script src="/assets/app.js?v=plan-b-roles-1" defer></script>
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="/" aria-label="VerifEye home"><span class="mark" aria-hidden="true"></span>VerifEye</a>
-    <div class="topbar-actions"><div id="app-nav" class="app-nav hidden"><button class="nav-link active" data-page="dashboard">Dashboard</button><button class="nav-link" data-page="events">Events</button><button class="nav-link" data-page="identities">Identities</button><button class="nav-link" data-page="notifications">Notifications</button><button id="logout" class="ghost">Sign out</button></div><div id="privacy-badge" class="privacy"><span></span> Local & private</div><button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false"><span class="theme-icon" aria-hidden="true">☾</span><span class="theme-label">Dark</span></button></div>
+    <div class="topbar-actions"><div id="app-nav" class="app-nav hidden"><button class="nav-link active" data-page="dashboard">Dashboard</button><button class="nav-link" data-page="events">Events</button><button class="nav-link" data-page="identities">Identities</button><button class="nav-link" data-page="notifications">Notifications</button><button id="logout" class="ghost">Sign out</button></div><div id="guest-nav" class="app-nav hidden"><span class="guest-nav-label">Camera view</span><button id="guest-logout" class="ghost">Sign out</button></div><div id="privacy-badge" class="privacy"><span></span> Local & private</div><button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false"><span class="theme-icon" aria-hidden="true">☾</span><span class="theme-label">Dark</span></button></div>
   </header>
 
   <main>
@@ -70,6 +71,16 @@
           <form id="camera-form" class="camera-form"><label>Camera name<input id="camera-name" maxlength="100" placeholder="Front door" required></label><label>RTSP URL<input id="camera-url" type="url" placeholder="rtsp://user:password@192.168.1.20/stream" required></label><button class="primary" type="submit"><span>Add and start camera</span><span>+</span></button><p id="camera-error" class="error" role="alert"></p></form>
           <div id="onvif-panel" class="onvif-panel hidden"><p id="onvif-status">Searching the LAN…</p><div id="onvif-devices"></div></div><div id="camera-list" class="camera-list"><p class="empty">No cameras configured.</p></div>
         </section>
+        <section class="guest-admin-panel">
+          <div class="section-heading"><div><p class="eyebrow">Shared access</p><h2>Guest camera login</h2><p>Create or rotate the preview-only shared account. Saving new credentials signs out every existing guest session.</p></div><span id="guest-account-status" class="account-status">Loading…</span></div>
+          <form id="guest-account-form" class="camera-form">
+            <label>Guest name<input id="guest-display-name" maxlength="100" value="Guest" required></label>
+            <label>Guest email<input id="guest-email" type="email" autocomplete="off" placeholder="guest@example.local" required></label>
+            <label>New password<input id="guest-password" type="password" autocomplete="new-password" minlength="8" placeholder="At least 8 characters" required></label>
+            <button class="primary" type="submit"><span>Save guest access</span><span>→</span></button>
+          </form>
+          <div class="guest-admin-actions"><p id="guest-account-error" class="error" role="alert"></p><button id="revoke-guest" class="ghost danger" type="button">Revoke guest access</button></div>
+        </section>
       </section>
       <section id="events-page" class="app-page hidden">
         <div class="dashboard-head"><div><p class="eyebrow">Recognition history</p><h1>Events.</h1><p>Review durable camera triggers, processing state, recognition outcomes, and failures.</p></div><button id="refresh-events" class="ghost">Refresh</button></div>
@@ -98,6 +109,13 @@
         <div id="notification-rules" class="notification-rules"><p class="empty">No notification rules configured.</p></div>
         <div class="notification-toolbar"><div><strong>Delivery history</strong><span>Most recent attempts first</span></div><div class="delivery-filters"><select id="delivery-channel"><option value="">All channels</option><option value="email">Email</option><option value="sms">SMS</option></select><select id="delivery-status"><option value="">All statuses</option><option value="queued">Queued</option><option value="retrying">Retrying</option><option value="sent">Sent</option><option value="failed">Failed</option></select></div></div>
         <div id="notification-deliveries" class="delivery-list"><p class="empty">No deliveries yet.</p></div>
+      </section>
+      <section id="guest-cameras-page" class="app-page hidden">
+        <div class="dashboard-head"><div><p class="eyebrow">Shared camera access</p><h1>Live cameras.</h1><p>Preview the cameras made available by your VerifEye administrator.</p></div></div>
+        <section class="camera-section camera-primary">
+          <div id="guest-camera-list" class="camera-list"><p class="empty">No camera previews are available.</p></div>
+          <p id="guest-camera-error" class="error" role="alert"></p>
+        </section>
       </section>
     </section>
   </main>

@@ -155,6 +155,13 @@ class DelegatedAuthTests(unittest.TestCase):
             auth = AuthStore(store._connection)
             user = auth.create_user("user@example.com", "User", "password123")
             self.token = auth.create_session(user.id)
+            guest = auth.replace_guest("guest@example.com", "Guest", "password123")
+            self.guest_session = auth.create_session(guest.id)
+            store._connection.execute(
+                """INSERT INTO cameras(id,name,encrypted_url,url_fingerprint,sanitized_host,enabled)
+                   VALUES(1,'Door',x'01','fingerprint','camera',1)"""
+            )
+            self.guest_preview_token = auth.create_preview_grant(guest.id, 1)
         self.camera = Camera(1, "Door", "rtsp://camera/light", "camera", "manual", True,
                              recognition_url="rtsp://camera/main")
         def get_camera(camera_id):
@@ -174,6 +181,20 @@ class DelegatedAuthTests(unittest.TestCase):
         response = media_auth(MediaAuthRequest(action="read", path="verifeye-camera-1-preview",
                                                protocol="webrtc", token=self.token, ip="127.0.0.1"))
         self.assertEqual(response.status_code, 204)
+    def test_guest_requires_a_camera_scoped_preview_grant(self):
+        with self.assertRaises(HTTPException):
+            media_auth(MediaAuthRequest(action="read", path="verifeye-camera-1-preview",
+                                        protocol="webrtc", token=self.guest_session))
+        response = media_auth(MediaAuthRequest(action="read", path="verifeye-camera-1-preview",
+                                               protocol="webrtc", token=self.guest_preview_token))
+        self.assertEqual(response.status_code, 204)
+        with EmbeddingStore(app.state.settings.database) as store:
+            AuthStore(store._connection).replace_guest(
+                "rotated@example.com", "Rotated guest", "replacement-password"
+            )
+        with self.assertRaises(HTTPException):
+            media_auth(MediaAuthRequest(action="read", path="verifeye-camera-1-preview",
+                                        protocol="webrtc", token=self.guest_preview_token))
     def test_loopback_rtsp_is_internal_and_recognition_webrtc_is_rejected(self):
         response = media_auth(MediaAuthRequest(action="read", path="verifeye-camera-1-recognition",
                                                protocol="rtsp", ip="127.0.0.1"))

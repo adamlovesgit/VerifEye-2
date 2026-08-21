@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { mode: "login", token: localStorage.getItem("verifeye_token"), file: null, streamStops: new Map(), currentUser: null, cameraLoadController: null, cameraLoadGeneration: 0 };
+const state = { mode: "login", token: localStorage.getItem("verifeye_token"), file: null, streamStops: new Map(), currentUser: null, cameraLoadController: null, cameraLoadGeneration: 0, setupRequired: false };
 
 function setTheme(theme) {
   const dark = theme === "dark";
@@ -32,6 +32,7 @@ async function api(path, options = {}) {
 }
 
 function setMode(mode) {
+  if (mode === "register" && !state.setupRequired) mode = "login";
   state.mode = mode;
   const registering = mode === "register";
   $("#login-tab").classList.toggle("active", !registering);
@@ -51,9 +52,19 @@ function showDashboard(user) {
   state.currentUser = user;
   $("#auth-view").classList.add("hidden");
   $("#app-view").classList.remove("hidden");
-  $("#app-nav").classList.remove("hidden");
+  const guest = user.role === "guest";
+  $("#app-nav").classList.toggle("hidden", guest);
+  $("#guest-nav").classList.toggle("hidden", !guest);
   $("#privacy-badge").classList.add("hidden");
-  showPage(new URLSearchParams(location.search).has("event") ? "events" : "dashboard");
+  if (guest) {
+    document.querySelectorAll(".app-page").forEach(page => page.classList.add("hidden"));
+    $("#guest-cameras-page").classList.remove("hidden");
+    if (location.pathname !== "/guest/cameras") history.replaceState({}, "", "/guest/cameras");
+    loadGuestCameras();
+  } else {
+    if (location.pathname === "/guest/cameras") history.replaceState({}, "", "/");
+    showPage(new URLSearchParams(location.search).has("event") ? "events" : "dashboard");
+  }
 }
 
 function showAuth() {
@@ -61,7 +72,18 @@ function showAuth() {
   state.token = null; localStorage.removeItem("verifeye_token");
   state.currentUser = null;
   $("#app-view").classList.add("hidden"); $("#auth-view").classList.remove("hidden");
-  $("#app-nav").classList.add("hidden"); $("#privacy-badge").classList.remove("hidden");
+  $("#app-nav").classList.add("hidden"); $("#guest-nav").classList.add("hidden"); $("#privacy-badge").classList.remove("hidden");
+  refreshSetupStatus();
+}
+
+async function refreshSetupStatus() {
+  try {
+    const setup = await api("/api/auth/setup");
+    state.setupRequired = setup.setupRequired;
+    $("#register-tab").classList.toggle("hidden", !state.setupRequired);
+    if (!state.setupRequired && state.mode === "register") setMode("login");
+    if (state.setupRequired) setMode("register");
+  } catch (_) {}
 }
 
 $("#login-tab").addEventListener("click", () => setMode("login"));
@@ -80,12 +102,17 @@ $("#auth-form").addEventListener("submit", async (event) => {
 
 
 function showPage(page) {
+  if (state.currentUser?.role === "guest") {
+    showDashboard(state.currentUser);
+    return;
+  }
   $("#dashboard-page").classList.toggle("hidden", page !== "dashboard");
   $("#events-page").classList.toggle("hidden", page !== "events");
   $("#identities-page").classList.toggle("hidden", page !== "identities");
   $("#notifications-page").classList.toggle("hidden", page !== "notifications");
+  $("#guest-cameras-page").classList.add("hidden");
   document.querySelectorAll(".nav-link").forEach(button => button.classList.toggle("active", button.dataset.page === page));
-  if (page === "dashboard") loadCameras();
+  if (page === "dashboard") { loadCameras(); loadGuestAccount(); }
   else {
     stopAllStreams();
     if (page === "events") loadEvents(); else if (page === "identities") loadIdentities(); else loadNotifications();
@@ -101,7 +128,9 @@ $("#refresh-notifications").addEventListener("click", loadNotifications);
 $("#delivery-channel").addEventListener("change", loadNotificationDeliveries);
 $("#delivery-status").addEventListener("change", loadNotificationDeliveries);
 
-$("#logout").addEventListener("click", async () => { try { await api("/api/auth/logout", { method: "POST" }); } finally { showAuth(); } });
+async function signOut() { try { await api("/api/auth/logout", { method: "POST" }); } finally { showAuth(); } }
+$("#logout").addEventListener("click", signOut);
+$("#guest-logout").addEventListener("click", signOut);
 const photo = $("#photo"), zone = $("#drop-zone");
 function resetEnrollment() {
   if ($("#preview").src.startsWith("blob:")) URL.revokeObjectURL($("#preview").src);
@@ -136,7 +165,7 @@ $("#enroll-form").addEventListener("submit", async (event) => {
 });
 
 (async function restoreSession() {
-  if (!state.token) return;
+  if (!state.token) { await refreshSetupStatus(); return; }
   try { showDashboard(await api("/api/auth/me")); } catch (_) { showAuth(); }
 })();
 
@@ -161,7 +190,7 @@ async function renderMjpeg(cameraId, image) {
   finally { if (state.streamStops.get(cameraId) === stop) state.streamStops.delete(cameraId); }
 }
 
-function renderWhep(camera, video, badge) {
+function renderWhep(camera, video, badge, previewToken = state.token) {
   state.streamStops.get(camera.id)?.();
   let reader = null, stopped = false;
   const stop = () => {
@@ -177,7 +206,7 @@ function renderWhep(camera, video, badge) {
   }
   reader = new window.MediaMTXWebRTCReader({
     url: camera.previewUrl,
-    token: state.token,
+    token: previewToken,
     onTrack: event => {
       if (stopped) return;
       video.srcObject = event.streams[0] || new MediaStream([event.track]);
@@ -274,6 +303,72 @@ async function loadCameras() {
     if (state.cameraLoadController === controller) state.cameraLoadController = null;
   }
 }
+
+async function loadGuestCameras() {
+  if (!state.token || state.currentUser?.role !== "guest") return;
+  stopAllStreams();
+  const list = $("#guest-camera-list");
+  $("#guest-camera-error").textContent = "";
+  try {
+    const cameras = await api("/api/guest/cameras");
+    list.innerHTML = cameras.length ? "" : '<p class="empty">No camera previews are available.</p>';
+    for (const camera of cameras) {
+      const card = document.createElement("article");
+      card.className = "camera-card";
+      card.dataset.cameraId = camera.id;
+      card.innerHTML = `<div class="camera-video"><video aria-label="Live camera preview" autoplay muted playsinline></video><div class="stream-state state-${camera.connectionState}">${statusText(camera)}</div></div><div class="camera-meta"><div><strong></strong><small></small></div></div>`;
+      card.querySelector("strong").textContent = camera.name;
+      card.querySelector("small").textContent = camera.previewAvailable ? "Preview available" : "Preview unavailable";
+      list.appendChild(card);
+      if (camera.previewAvailable) {
+        try {
+          const authorization = await api(`/api/guest/cameras/${camera.id}/preview-authorization`, { method: "POST" });
+          renderWhep({ ...camera, previewUrl: authorization.url }, card.querySelector("video"), card.querySelector(".stream-state"), authorization.token);
+        } catch (_) {
+          const badge = card.querySelector(".stream-state");
+          badge.className = "stream-state state-offline";
+          badge.textContent = "Preview unavailable";
+        }
+      }
+    }
+  } catch (error) {
+    $("#guest-camera-error").textContent = error.message;
+    if (error.status === 401) showAuth();
+  }
+}
+
+async function loadGuestAccount() {
+  if (state.currentUser?.role !== "admin") return;
+  $("#guest-account-error").textContent = "";
+  try {
+    const result = await api("/api/admin/guest");
+    $("#guest-account-status").textContent = result.configured ? "Configured" : "Not configured";
+    $("#revoke-guest").disabled = !result.configured;
+    if (result.guest) {
+      $("#guest-display-name").value = result.guest.displayName;
+      $("#guest-email").value = result.guest.email;
+    }
+  } catch (error) { $("#guest-account-error").textContent = error.message; }
+}
+
+$("#guest-account-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  if (!event.currentTarget.reportValidity()) return;
+  const button = event.currentTarget.querySelector("button[type=submit]");
+  button.disabled = true; $("#guest-account-error").textContent = "";
+  try {
+    await api("/api/admin/guest", { method: "PUT", body: JSON.stringify({displayName: $("#guest-display-name").value, email: $("#guest-email").value, password: $("#guest-password").value}) });
+    $("#guest-password").value = "";
+    await loadGuestAccount();
+  } catch (error) { $("#guest-account-error").textContent = error.message; }
+  finally { button.disabled = false; }
+});
+
+$("#revoke-guest").addEventListener("click", async event => {
+  event.currentTarget.disabled = true; $("#guest-account-error").textContent = "";
+  try { await api("/api/admin/guest", { method: "DELETE" }); $("#guest-password").value = ""; await loadGuestAccount(); }
+  catch (error) { $("#guest-account-error").textContent = error.message; event.currentTarget.disabled = false; }
+});
 
 function eventStateLabel(value) {
   return value ? value.charAt(0).toUpperCase() + value.slice(1).replaceAll("_", " ") : "—";
@@ -503,5 +598,5 @@ function renderOnvifDevice(device, container) {
   });
   container.appendChild(form);
 }
-async function pollCameraStatus(){if(!state.token||$("#dashboard-page").classList.contains("hidden"))return;try{for(const camera of await api("/api/cameras")){const card=document.querySelector(`[data-camera-id="${camera.id}"]`);if(!card)continue;const badge=card.querySelector(".stream-state");badge.className=`stream-state state-${camera.connectionState}`;badge.textContent=statusText(camera);}}catch(_){}}
+async function pollCameraStatus(){if(!state.token||state.currentUser?.role==="guest"||$("#dashboard-page").classList.contains("hidden"))return;try{for(const camera of await api("/api/cameras")){const card=document.querySelector(`[data-camera-id="${camera.id}"]`);if(!card)continue;const badge=card.querySelector(".stream-state");badge.className=`stream-state state-${camera.connectionState}`;badge.textContent=statusText(camera);}}catch(_){}}
 setInterval(pollCameraStatus,5000);

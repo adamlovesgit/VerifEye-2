@@ -78,9 +78,11 @@ storage tests with `python -m unittest discover -s backend/tests/unit`.
 
 ## Local web interface
 
-The browser interface supports local account creation, sign-in, persistent
-sessions, image preview, drag-and-drop upload, and face enrollment into the
-SQLite embedding database.
+The first local account becomes the sole administrator. After setup, the
+administrator can create one shared guest login from the camera dashboard.
+Administrators retain the full interface; guests are routed to a dedicated
+preview-only camera page. Guest credential rotation and revocation invalidate
+all guest sessions.
 
 Install and start it from the project root:
 
@@ -104,15 +106,23 @@ Then open `http://127.0.0.1:8000`. The recognition model defaults to
 Uploaded enrollment photos stay under `backend/data/enrollments`; the image
 and its normalized embedding are never sent to a cloud service. Cameras,
 identities, events, recognition results, and notification settings belong to
-the installation and are shared by all authenticated accounts.
+the installation. Only the administrator can read or change this data; guests
+receive a non-secret camera list and short-lived preview grants.
+
+If the administrator password is lost, stop VerifEye and run the offline
+recovery command from the project root. Back up the database first. The command
+changes only the administrator password and revokes all administrator sessions:
+
+```powershell
+python backend/scripts/reset_admin_password.py --database backend/data/verifeye.db
+```
 
 ## Resetting local data after schema changes
 
-VerifEye supports only the fresh database layout in
-`backend/src/verifeye/storage/schema.sql`; startup does not migrate or inspect
-older development schemas. Before starting this version against existing local
-development data, stop VerifEye and rename the data directory so the reset is
-recoverable:
+Plan B automatically promotes a single legacy Plan A account to administrator.
+Databases with multiple legacy users or other older development layouts still
+require a reset. Before starting this version against unsupported local data,
+stop VerifEye and rename the data directory so the reset is recoverable:
 
 ```powershell
 Rename-Item -LiteralPath backend\data -NewName "data-backup-$(Get-Date -Format yyyyMMdd-HHmmss)"

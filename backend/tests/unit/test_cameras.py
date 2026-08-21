@@ -57,14 +57,14 @@ class CameraRepositoryTests(unittest.TestCase):
     def test_onvif_credentials_are_encrypted_and_restored(self):
         camera = self.repository.create(
             "Door", "rtsp://camera.local/live", False, "onvif", None,
-            "http://camera.local/onvif/device_service", "admin", "camera-password",
+            "http://camera.local/onvif/device_service", "onvif-user-92", "camera-password",
         )
-        self.assertEqual(camera.onvif_username, "admin")
+        self.assertEqual(camera.onvif_username, "onvif-user-92")
         self.assertEqual(camera.onvif_password, "camera-password")
         self.assertEqual(camera.onvif_endpoint, "http://camera.local/onvif/device_service")
         raw = self.database.read_bytes()
         self.assertNotIn(b"camera-password", raw)
-        self.assertNotIn(b"admin", raw)
+        self.assertNotIn(b"onvif-user-92", raw)
 
 class BufferTests(unittest.TestCase):
     def test_latest_frame_replaces_old_values(self):

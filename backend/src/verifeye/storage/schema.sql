@@ -6,8 +6,11 @@ CREATE TABLE IF NOT EXISTS users (
     display_name TEXT NOT NULL,
     password_hash BLOB NOT NULL,
     password_salt BLOB NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('admin', 'guest')),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_users_role ON users(role);
 
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash BLOB PRIMARY KEY,
@@ -17,6 +20,16 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE INDEX IF NOT EXISTS ix_sessions_user_id ON sessions(user_id);
+
+CREATE TABLE IF NOT EXISTS preview_grants (
+    token_hash BLOB PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    camera_id INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS ix_preview_grants_expiry ON preview_grants(expires_at);
 
 CREATE TABLE IF NOT EXISTS identities (
     id INTEGER PRIMARY KEY,

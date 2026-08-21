@@ -59,8 +59,30 @@ class EmbeddingStore:
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._connection.execute("PRAGMA busy_timeout = 5000")
         self._connection.execute("PRAGMA journal_mode = WAL")
+        self._migrate_auth_roles()
         schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
         self._connection.executescript(schema)
+
+    def _migrate_auth_roles(self) -> None:
+        """Promote the single legacy Plan A account before applying Plan B schema."""
+        users_exists = self._connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'"
+        ).fetchone()
+        if not users_exists:
+            return
+        columns = {row[1] for row in self._connection.execute("PRAGMA table_info(users)")}
+        if "role" in columns:
+            return
+        count = int(self._connection.execute("SELECT count(*) FROM users").fetchone()[0])
+        if count > 1:
+            raise RuntimeError(
+                "Plan B migration requires at most one legacy user; remove extra development accounts first."
+            )
+        with self._connection:
+            self._connection.execute(
+                """ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'
+                   CHECK (role IN ('admin', 'guest'))"""
+            )
 
     def __enter__(self) -> "EmbeddingStore":
         return self

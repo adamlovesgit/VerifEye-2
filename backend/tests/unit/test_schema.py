@@ -39,8 +39,48 @@ class FreshSchemaTests(unittest.TestCase):
                 table for table in tables
                 if "user_id" in {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
             }
-        self.assertEqual(owners, {"sessions"})
+        self.assertEqual(owners, {"sessions", "preview_grants"})
         self.assertNotIn("schema_version", tables)
+
+    def test_database_allows_only_one_user_per_role(self):
+        with closing(self.connect()) as connection:
+            values = (b"hash", b"salt")
+            connection.execute(
+                "INSERT INTO users(email,display_name,password_hash,password_salt,role) VALUES('a@x.test','A',?,?,'admin')",
+                values,
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO users(email,display_name,password_hash,password_salt,role) VALUES('b@x.test','B',?,?,'admin')",
+                    values,
+                )
+            connection.execute(
+                "INSERT INTO users(email,display_name,password_hash,password_salt,role) VALUES('g@x.test','G',?,?,'guest')",
+                values,
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO users(email,display_name,password_hash,password_salt,role) VALUES('h@x.test','H',?,?,'guest')",
+                    values,
+                )
+
+    def test_single_plan_a_user_is_promoted_to_administrator(self):
+        legacy = Path(self.temp.name) / "legacy.db"
+        with closing(sqlite3.connect(legacy)) as connection:
+            connection.execute(
+                """CREATE TABLE users(
+                       id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE,
+                       display_name TEXT NOT NULL, password_hash BLOB NOT NULL,
+                       password_salt BLOB NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                   )"""
+            )
+            connection.execute(
+                "INSERT INTO users(email,display_name,password_hash,password_salt) VALUES('owner@x.test','Owner',x'01',x'02')"
+            )
+            connection.commit()
+        with EmbeddingStore(legacy) as store:
+            row = store._connection.execute("SELECT role FROM users").fetchone()
+            self.assertEqual(row["role"], "admin")
 
     def test_notification_rule_shape_and_uniqueness_are_enforced(self):
         with closing(self.connect()) as connection:
