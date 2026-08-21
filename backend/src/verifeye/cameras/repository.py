@@ -120,4 +120,5 @@ class CameraRepository:
         return Camera(row["id"], row["name"], self.cipher.decrypt(row["encrypted_url"]),
                       row["sanitized_host"], row["source_type"], bool(row["enabled"]),
                       self.cipher.decrypt(recognition) if recognition else None,
-                      row["onvif_endpoint"], credentials.get("username"), credentials.get("password"))
+                      row["onvif_endpoint"], credentials.get("username"), credentials.get("password"),
+                      row["user_id"] if self.has_user_id else None)

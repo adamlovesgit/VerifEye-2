@@ -14,7 +14,10 @@ class EnrollmentError(Exception): pass
 
 class EnrollmentService:
     def __init__(self, database, upload_dir, engine): self.database, self.upload_dir, self.engine = database, Path(upload_dir), engine
-    def enroll(self, user, contents: bytes, suffix: str, original_name: str | None):
+    def enroll(self, user, display_name: str, contents: bytes, suffix: str, original_name: str | None):
+        display_name = display_name.strip()
+        if not display_name or len(display_name) > 100:
+            raise EnrollmentError("Enter a name between 1 and 100 characters.")
         frame = cv2.imdecode(np.frombuffer(contents, dtype=np.uint8), cv2.IMREAD_COLOR)
         if frame is None: raise EnrollmentError("The uploaded file is not a valid image.")
         detector = create_face_detector(.5)
@@ -26,9 +29,14 @@ class EnrollmentService:
         target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(contents)
         try:
             with EmbeddingStore(self.database) as store:
-                identity = store.upsert_identity(f"user-{user.id}", user.display_name, user.id)
-                embedding_id = store.add_embedding(identity, faces[0].embedding, source_path=relative,
-                    detection_score=float(faces[0].score), metadata={"original_name": original_name})
+                identity = store.upsert_identity(f"identity-{uuid4().hex}", display_name, user.id)
+                try:
+                    embedding_id = store.add_embedding(identity, faces[0].embedding, source_path=relative,
+                        detection_score=float(faces[0].score), metadata={"original_name": original_name})
+                except Exception:
+                    store.delete_identity(identity, user.id)
+                    raise
         except Exception:
             target.unlink(missing_ok=True); raise
-        return {"embeddingId": embedding_id, "message": "Face enrolled successfully.", "score": round(float(faces[0].score), 3)}
+        return {"identityId": identity, "embeddingId": embedding_id, "displayName": display_name,
+                "message": "Identity created successfully.", "score": round(float(faces[0].score), 3)}

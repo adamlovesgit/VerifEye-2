@@ -13,14 +13,14 @@
       document.documentElement.style.colorScheme = theme;
     })();
   </script>
-  <link rel="stylesheet" href="/assets/styles.css?v=phase2-events-2">
+  <link rel="stylesheet" href="/assets/styles.css?v=multiple-identities-1">
   <link rel="stylesheet" href="/assets/cameras.css?v=onvif-import-1">
   <link rel="stylesheet" href="/assets/onvif.css?v=onvif-import-1">
   <link rel="stylesheet" href="/assets/events.css?v=phase2-events-2">
   <link rel="stylesheet" href="/assets/notifications.css?v=notifications-3">
   <link rel="stylesheet" href="/assets/webrtc.css?v=1">
   <script src="/assets/mediamtx-reader.js?v=1.19.3" defer></script>
-  <script src="/assets/app.js?v=webrtc-preview-1" defer></script>
+  <script src="/assets/app.js?v=multiple-identities-1" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -80,8 +80,8 @@
       <section id="identities-page" class="app-page hidden">
         <div class="dashboard-head"><div><p class="eyebrow">Local database</p><h1>Identities.</h1><p>Review enrolled people, biometric records, and associated metadata.</p></div><button id="open-enrollment" class="primary compact">Enroll a face <span>+</span></button></div>
         <div id="enrollment-panel" class="enroll-grid hidden">
-          <form id="enroll-form" class="upload-card"><input id="photo" type="file" accept="image/jpeg,image/png,image/webp" hidden><button id="drop-zone" class="drop-zone" type="button"><span class="upload-icon" aria-hidden="true">↑</span><strong>Choose a photo</strong><span>or drag and drop it here</span><small>JPEG, PNG or WebP · up to 10 MB</small></button><div id="preview-wrap" class="preview-wrap hidden"><img id="preview" alt="Selected enrollment photo"><button id="change-photo" type="button" class="change">Choose another</button></div><p id="enroll-error" class="error" role="alert"></p><button id="enroll-button" class="primary" type="submit" disabled><span>Enroll this face</span><span>→</span></button></form>
-          <aside class="tips"><p class="kicker">For the best result</p><h2>A few quick tips.</h2><ul><li>Face the camera directly</li><li>Use even, natural lighting</li><li>Remove sunglasses or face coverings</li><li>Make sure only you are in the photo</li></ul><div id="success" class="success hidden"><span>✓</span><div><strong>Face enrolled.</strong><p>The identity database has been updated.</p></div></div></aside>
+          <form id="enroll-form" class="upload-card"><label class="identity-name-field">Identity name<input id="identity-name" name="name" maxlength="100" autocomplete="off" placeholder="Ada Lovelace" required></label><input id="photo" type="file" accept="image/jpeg,image/png,image/webp" hidden><button id="drop-zone" class="drop-zone" type="button"><span class="upload-icon" aria-hidden="true">↑</span><strong>Choose a photo</strong><span>or drag and drop it here</span><small>JPEG, PNG or WebP · up to 10 MB</small></button><div id="preview-wrap" class="preview-wrap hidden"><img id="preview" alt="Selected enrollment photo"><button id="change-photo" type="button" class="change">Choose another</button></div><p id="enroll-error" class="error" role="alert"></p><button id="enroll-button" class="primary" type="submit" disabled><span>Create identity</span><span>→</span></button></form>
+          <aside class="tips"><p class="kicker">For the best result</p><h2>A few quick tips.</h2><ul><li>Face the camera directly</li><li>Use even, natural lighting</li><li>Remove sunglasses or face coverings</li><li>Make sure only one person is in the photo</li></ul><div id="success" class="success hidden"><span>✓</span><div><strong>Identity created.</strong><p id="success-message">The identity database has been updated.</p></div></div></aside>
         </div>
         <div class="identity-toolbar"><div><strong id="identity-count">0 identities</strong><span>Stored only on this server</span></div><button id="refresh-identities" class="ghost">Refresh</button></div>
         <p id="identity-error" class="error" role="alert"></p><div id="identity-list" class="identity-list"><p class="empty">No identities enrolled.</p></div>

@@ -308,12 +308,12 @@ def logout(authorization: str = Header(), _user=Depends(current_user)):
 
 
 @app.post("/api/enroll", status_code=201)
-async def enroll(image: UploadFile = File(), user=Depends(current_user)):
+async def enroll(name: str = Form(), image: UploadFile = File(), user=Depends(current_user)):
     suffixes = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
     if image.content_type not in suffixes: raise HTTPException(415, "Upload a JPEG, PNG, or WebP image.")
     contents = await image.read(MAX_UPLOAD_BYTES + 1)
     if len(contents) > MAX_UPLOAD_BYTES: raise HTTPException(413, "Image must be 10 MB or smaller.")
-    try: return app.state.enrollment.enroll(user, contents, suffixes[image.content_type], image.filename)
+    try: return app.state.enrollment.enroll(user, name, contents, suffixes[image.content_type], image.filename)
     except EnrollmentError as exc: raise HTTPException(422, str(exc)) from exc
 
 

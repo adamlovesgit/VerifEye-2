@@ -210,6 +210,7 @@ class EmbeddingStore:
         self,
         embedding: Iterable[float] | np.ndarray,
         *,
+        user_id: int | None = None,
         model_name: str = DEFAULT_MODEL,
         limit: int = 5,
         min_similarity: float = -1.0,
@@ -217,11 +218,14 @@ class EmbeddingStore:
         query = self._validate_embedding(embedding)
         if limit < 1:
             raise ValueError("limit must be at least 1")
+        if self.has_identity_user_id and user_id is None:
+            raise ValueError("An authenticated identity owner is required")
         rows = self._connection.execute(
             """SELECT e.id, e.identity_id, e.vector, i.external_id, i.display_name
                FROM face_embeddings e JOIN identities i ON i.id = e.identity_id
-               WHERE e.model_name = ? AND e.dimensions = ?""",
-            (model_name, query.size),
+               WHERE e.model_name = ? AND e.dimensions = ?""" +
+            (" AND i.user_id = ?" if self.has_identity_user_id else ""),
+            (model_name, query.size, user_id) if self.has_identity_user_id else (model_name, query.size),
         ).fetchall()
         matches = []
         for row in rows:

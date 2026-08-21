@@ -161,7 +161,10 @@ class FakeInferenceSession:
     def process(self, _record): return []
     def close(self): pass
 class FakeInference:
-    def open_session(self): return FakeInferenceSession()
+    def __init__(self): self.user_ids = []
+    def open_session(self, user_id):
+        self.user_ids.append(user_id)
+        return FakeInferenceSession()
 
 
 class FailingCapture:
@@ -200,11 +203,25 @@ class CleanupTimeoutCapture:
 class RecognitionModeTests(unittest.TestCase):
     def make_manager(self, camera, media, capture_factory=FailingCapture):
         repository = SimpleNamespace(get=lambda _id: camera)
-        cameras, sink = FakeCameras(), FakeSink()
-        manager = RecognitionSessionManager(repository, cameras, media, FakeInference(), sink,
+        cameras, sink, inference = FakeCameras(), FakeSink(), FakeInference()
+        manager = RecognitionSessionManager(repository, cameras, media, inference, sink,
                                             recognition_fps=100, timeout=.01,
                                             capture_factory=capture_factory)
         return manager, cameras, sink
+
+    def test_session_uses_the_camera_owner_for_identity_matching(self):
+        camera = Camera(1, "Door", "rtsp://light", "host", "manual", True, user_id=7)
+        media = SimpleNamespace(recognition_url=lambda _camera: None)
+        inference = FakeInference()
+        manager = RecognitionSessionManager(
+            SimpleNamespace(get=lambda _id: camera), FakeCameras(), media, inference, FakeSink(),
+            recognition_fps=100, timeout=.01, capture_factory=FailingCapture,
+        )
+
+        manager.request(1, 10)
+        wait_for(lambda: bool(inference.user_ids))
+
+        self.assertEqual(inference.user_ids, [7])
 
     def test_shared_lightweight_uses_latest_and_opens_zero_recognition_decoders(self):
         camera = Camera(1, "Door", "rtsp://light", "host", "manual", True)

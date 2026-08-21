@@ -103,11 +103,17 @@ $("#delivery-status").addEventListener("change", loadNotificationDeliveries);
 
 $("#logout").addEventListener("click", async () => { try { await api("/api/auth/logout", { method: "POST" }); } finally { showAuth(); } });
 const photo = $("#photo"), zone = $("#drop-zone");
+function resetEnrollment() {
+  if ($("#preview").src.startsWith("blob:")) URL.revokeObjectURL($("#preview").src);
+  state.file = null; photo.value = ""; $("#identity-name").value = ""; $("#preview").removeAttribute("src");
+  zone.classList.remove("hidden"); $("#preview-wrap").classList.add("hidden"); $("#enroll-button").disabled = true;
+}
 function chooseFile(file) {
   if (!file) return;
   if (!['image/jpeg','image/png','image/webp'].includes(file.type) || file.size > 10 * 1024 * 1024) {
     $("#enroll-error").textContent = "Choose a JPEG, PNG, or WebP image up to 10 MB."; return;
   }
+  if ($("#preview").src.startsWith("blob:")) URL.revokeObjectURL($("#preview").src);
   state.file = file; $("#preview").src = URL.createObjectURL(file);
   zone.classList.add("hidden"); $("#preview-wrap").classList.remove("hidden");
   $("#enroll-button").disabled = false; $("#enroll-error").textContent = ""; $("#success").classList.add("hidden");
@@ -119,12 +125,14 @@ photo.addEventListener("change", () => chooseFile(photo.files[0]));
 ['dragleave','drop'].forEach(name => zone.addEventListener(name, e => { e.preventDefault(); zone.classList.remove('drag'); }));
 zone.addEventListener("drop", e => chooseFile(e.dataTransfer.files[0]));
 $("#enroll-form").addEventListener("submit", async (event) => {
-  event.preventDefault(); if (!state.file) return;
+  event.preventDefault(); if (!state.file || !event.currentTarget.reportValidity()) return;
+  const identityName = $("#identity-name").value.trim();
+  if (!identityName) { $("#enroll-error").textContent = "Enter a name for this identity."; return; }
   const button = $("#enroll-button"); button.disabled = true; button.querySelector("span").textContent = "Processing face…";
-  const data = new FormData(); data.append("image", state.file);
-  try { await api("/api/enroll", { method: "POST", body: data }); $("#success").classList.remove("hidden"); await loadIdentities(); }
+  const data = new FormData(); data.append("name", identityName); data.append("image", state.file);
+  try { const result = await api("/api/enroll", { method: "POST", body: data }); $("#success-message").textContent = `${result.displayName} is ready for recognition.`; $("#success").classList.remove("hidden"); resetEnrollment(); await loadIdentities(); }
   catch (error) { $("#enroll-error").textContent = error.message; if (error.status === 401) showAuth(); }
-  finally { button.disabled = false; button.querySelector("span").textContent = "Enroll this face"; }
+  finally { button.disabled = !state.file; button.querySelector("span").textContent = "Create identity"; }
 });
 
 (async function restoreSession() {
