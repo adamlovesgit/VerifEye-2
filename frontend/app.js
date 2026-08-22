@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { mode: "login", token: localStorage.getItem("verifeye_token"), file: null, streamStops: new Map(), currentUser: null, cameraLoadController: null, cameraLoadGeneration: 0, setupRequired: false };
+const state = { mode: "login", token: localStorage.getItem("verifeye_token"), file: null, streamStops: new Map(), currentUser: null, cameraLoadController: null, cameraLoadGeneration: 0, cameraEventPoll: null, setupRequired: false };
 
 function setTheme(theme) {
   const dark = theme === "dark";
@@ -69,6 +69,7 @@ function showDashboard(user) {
 
 function showAuth() {
   stopAllStreams();
+  stopCameraDashboardUpdates();
   state.token = null; localStorage.removeItem("verifeye_token");
   state.currentUser = null;
   $("#app-view").classList.add("hidden"); $("#auth-view").classList.remove("hidden");
@@ -115,6 +116,7 @@ function showPage(page) {
   if (page === "dashboard") { loadCameras(); loadGuestAccount(); }
   else {
     stopAllStreams();
+    stopCameraDashboardUpdates();
     if (page === "events") loadEvents(); else if (page === "identities") loadIdentities(); else loadNotifications();
   }
 }
@@ -123,7 +125,6 @@ $("#open-enrollment").addEventListener("click", () => $("#enrollment-panel").cla
 $("#refresh-identities").addEventListener("click", loadIdentities);
 $("#refresh-events").addEventListener("click", loadEvents);
 $("#event-state-filter").addEventListener("change", loadEvents);
-$("#open-events").addEventListener("click", () => showPage("events"));
 $("#refresh-notifications").addEventListener("click", loadNotifications);
 $("#delivery-channel").addEventListener("change", loadNotificationDeliveries);
 $("#delivery-status").addEventListener("change", loadNotificationDeliveries);
@@ -171,6 +172,13 @@ $("#enroll-form").addEventListener("submit", async (event) => {
 
 function statusText(camera) { return {connecting:"Loading",live:"Live",offline:"Offline",authentication_failed:"Authentication failure",retrying:"Retrying",stopped:"Stopped"}[camera.connectionState] || camera.connectionState; }
 function stopAllStreams() { for (const stop of state.streamStops.values()) stop(); state.streamStops.clear(); }
+function stopCameraEventPolling() { clearInterval(state.cameraEventPoll); state.cameraEventPoll = null; }
+function stopCameraDashboardUpdates() {
+  state.cameraLoadController?.abort();
+  state.cameraLoadController = null;
+  state.cameraLoadGeneration++;
+  stopCameraEventPolling();
+}
 window.addEventListener("pagehide", stopAllStreams);
 function findBytes(bytes, needle, from=0) { for (let i=Math.max(0,from);i<=bytes.length-needle.length;i++) if (needle.every((b,j)=>bytes[i+j]===b)) return i; return -1; }
 
@@ -260,14 +268,20 @@ async function loadCameras() {
   try {
     const cameras = await api("/api/cameras", {signal: controller.signal});
     if (controller.signal.aborted || generation !== state.cameraLoadGeneration) return;
+    updateCameraSystemStatus(cameras);
     const list = $("#camera-list");
     list.innerHTML = cameras.length ? "" : '<p class="empty">No cameras configured.</p>';
     for (const camera of cameras) {
       const card = document.createElement("article");
       card.className = "camera-card"; card.dataset.cameraId = camera.id;
-      card.innerHTML = `<div class="camera-video"><video aria-label="Live camera preview" autoplay muted playsinline></video><div class="stream-state state-${camera.connectionState}">${statusText(camera)}</div>${camera.running?'<button class="stream-stop" type="button" aria-label="Turn off camera stream">Turn off</button>':""}</div><div class="camera-meta"><div><strong></strong><small></small></div><div class="camera-actions"><button class="ghost recognize-test">Test recognition</button><button class="ghost edit">Edit</button><button class="ghost toggle"></button><button class="ghost remove">Delete</button></div></div>`;
-      card.querySelector("strong").textContent = camera.name;
-      card.querySelector("small").textContent = camera.host;
+      card.innerHTML = `<div class="camera-latest-event"><button class="camera-latest-link" type="button" disabled><span class="latest-event-label">Last event</span><span class="latest-event-copy"><strong>Checking for events…</strong><small></small></span><span class="latest-event-arrow" aria-hidden="true">→</span></button></div><div class="camera-video"><video aria-label="Live camera preview" autoplay muted playsinline></video><div class="stream-state state-${camera.connectionState}">${statusText(camera)}</div></div><div class="camera-meta"><div class="camera-identity"><strong></strong><small></small></div><details class="camera-menu"><summary><span aria-hidden="true">•••</span></summary><div class="camera-actions"><button class="recognize-test" type="button">Test recognition</button><button class="edit" type="button">Edit camera</button><button class="toggle" type="button"></button><button class="remove danger" type="button">Delete camera</button></div></details></div>`;
+      card.querySelector(".camera-identity strong").textContent = camera.name;
+      card.querySelector(".camera-identity small").textContent = camera.host;
+      const menu = card.querySelector(".camera-menu");
+      menu.querySelector("summary").setAttribute("aria-label", `Options for ${camera.name}`);
+      menu.addEventListener("toggle", () => {
+        if (menu.open) document.querySelectorAll(".camera-menu[open]").forEach(other => { if (other !== menu) other.open = false; });
+      });
       const test = card.querySelector(".recognize-test");
       test.disabled = !camera.running;
       test.title = camera.running ? "Create a manual camera event" : "Start the camera before testing recognition";
@@ -278,30 +292,76 @@ async function loadCameras() {
         const change = {name}; if (url) change.url = url;
         await api(`/api/cameras/${camera.id}`, {method:"PATCH", body:JSON.stringify(change)}); loadCameras();
       };
-      const toggle = card.querySelector(".toggle"), streamStop = card.querySelector(".stream-stop");
+      const toggle = card.querySelector(".toggle");
       toggle.textContent = camera.running ? "Turn off stream" : "Start stream";
-      const setStreamEnabled = async enabled => {
-        toggle.disabled = true; if (streamStop) streamStop.disabled = true;
+      const setStreamRunning = async running => {
+        toggle.disabled = true;
         try {
-          if (!enabled) state.streamStops.get(camera.id)?.();
-          await api("/api/cameras/" + camera.id, {method:"PATCH", body:JSON.stringify({enabled})});
-          loadCameras();
+          if (!running) state.streamStops.get(camera.id)?.();
+          await api(`/api/cameras/${camera.id}/${running ? "start" : "stop"}`, {method:"POST"});
+          await loadCameras();
         } catch (error) { $("#camera-error").textContent = error.message; }
-        finally { toggle.disabled = false; if (streamStop) streamStop.disabled = false; }
+        finally { toggle.disabled = false; }
       };
-      toggle.onclick = () => setStreamEnabled(!camera.running);
-      if (streamStop) streamStop.onclick = () => setStreamEnabled(false);
+      toggle.onclick = () => setStreamRunning(!camera.running);
       card.querySelector(".remove").onclick = async () => {
         await api(`/api/cameras/${camera.id}`, {method:"DELETE"}); loadCameras();
       };
       list.appendChild(card);
       if (camera.running && !state.streamStops.has(camera.id)) renderWhep(camera, card.querySelector("video"), card.querySelector(".stream-state"));
     }
+    await refreshLatestCameraEvents(cameras, generation);
+    if (generation === state.cameraLoadGeneration) {
+      stopCameraEventPolling();
+      state.cameraEventPoll = setInterval(() => refreshLatestCameraEvents(cameras, generation), 15000);
+    }
   } catch (error) {
     if (error.name !== "AbortError" && generation === state.cameraLoadGeneration) $("#camera-error").textContent = error.message;
   } finally {
     if (state.cameraLoadController === controller) state.cameraLoadController = null;
   }
+}
+
+function updateCameraSystemStatus(cameras) {
+  const indicator = $("#camera-status-indicator"), label = $("#camera-system-status");
+  const running = cameras.filter(camera => camera.running).length;
+  const allRunning = cameras.length > 0 && running === cameras.length;
+  indicator.classList.toggle("status-on", allRunning);
+  indicator.classList.toggle("status-off", !allRunning);
+  if (!cameras.length) label.textContent = "No cameras configured";
+  else if (allRunning) label.textContent = cameras.length === 1 ? "Camera on" : `All ${cameras.length} cameras on`;
+  else if (!running) label.textContent = cameras.length === 1 ? "Camera off" : `All ${cameras.length} cameras off`;
+  else label.textContent = `${running} of ${cameras.length} cameras on`;
+}
+
+function openCameraEvent(eventId) {
+  history.pushState({}, "", `/?event=${encodeURIComponent(eventId)}`);
+  $("#event-state-filter").value = "";
+  showPage("events");
+}
+
+async function refreshLatestCameraEvents(cameras, generation) {
+  await Promise.all(cameras.map(async camera => {
+    try {
+      const query = new URLSearchParams({camera_id: String(camera.id), limit: "1", offset: "0"});
+      const events = await api(`/api/camera-events?${query}`);
+      if (generation !== state.cameraLoadGeneration) return;
+      const card = document.querySelector(`.camera-card[data-camera-id="${camera.id}"]`);
+      const button = card?.querySelector(".camera-latest-link");
+      if (!button) return;
+      const event = events[0];
+      if (!event) {
+        button.querySelector("strong").textContent = "No events recorded";
+        button.querySelector("small").textContent = "";
+        button.disabled = true;
+        return;
+      }
+      button.querySelector("strong").textContent = eventStateLabel(event.event_type);
+      button.querySelector("small").textContent = `${eventStateLabel(event.state)} · ${formatDate(event.accepted_at)}`;
+      button.disabled = false;
+      button.onclick = () => openCameraEvent(event.id);
+    } catch (_) {}
+  }));
 }
 
 async function loadGuestCameras() {
@@ -402,23 +462,44 @@ async function expandEvent(card, eventId, button) {
     const error = event.error_message || event.session?.session_error_message || event.dispatch?.last_error_message;
     if (error) { const message = document.createElement("p"); message.className = "event-failure"; message.textContent = error; detail.appendChild(message); }
     const results = document.createElement("div"); results.className = "event-results";
+    const screenshotsByResult = new Map();
+    const unmatchedScreenshots = [];
+    for (const shot of event.screenshots) {
+      if (shot.result_id == null) {
+        unmatchedScreenshots.push(shot);
+        continue;
+      }
+      const resultScreenshots = screenshotsByResult.get(String(shot.result_id)) || [];
+      resultScreenshots.push(shot);
+      screenshotsByResult.set(String(shot.result_id), resultScreenshots);
+    }
+    const createScreenshotLink = shot => {
+      const link = document.createElement("a");
+      link.href = `/assets/image-viewer.html?id=${encodeURIComponent(shot.id)}`;
+      link.target = "_blank"; link.rel = "noopener";
+      link.textContent = `${eventStateLabel(shot.role)} image`;
+      return link;
+    };
     if (!event.results.length) results.innerHTML = '<p class="empty">No recognition results yet.</p>';
     for (const result of event.results) {
       const row = document.createElement("div"); row.className = "event-result";
-      row.innerHTML = '<span class="outcome-badge"></span><strong></strong><span class="result-time"></span>';
+      row.innerHTML = '<span class="outcome-badge"></span><strong></strong><span class="result-time"></span><span class="result-screenshots"></span>';
       row.querySelector(".outcome-badge").textContent = eventStateLabel(result.outcome);
       row.querySelector("strong").textContent = result.displayed_label || (result.outcome === "no_face" ? "No face detected" : result.error_message || "Recognition result");
       row.querySelector(".result-time").textContent = formatDate(result.capture_timestamp);
+      const resultScreenshots = row.querySelector(".result-screenshots");
+      for (const shot of screenshotsByResult.get(String(result.id)) || []) {
+        resultScreenshots.appendChild(createScreenshotLink(shot));
+      }
+      screenshotsByResult.delete(String(result.id));
       results.appendChild(row);
     }
+    for (const shots of screenshotsByResult.values()) unmatchedScreenshots.push(...shots);
     detail.appendChild(results);
-    if (event.screenshots.length) {
+    if (unmatchedScreenshots.length) {
       const images = document.createElement("div"); images.className = "event-screenshots";
-      for (const shot of event.screenshots) {
-        const link = document.createElement("a");
-        link.href = `/assets/image-viewer.html?id=${encodeURIComponent(shot.id)}`;
-        link.target = "_blank"; link.rel = "noopener";
-        link.textContent = `${eventStateLabel(shot.role)} image`; images.appendChild(link);
+      for (const shot of unmatchedScreenshots) {
+        images.appendChild(createScreenshotLink(shot));
       }
       detail.appendChild(images);
     }
@@ -453,7 +534,10 @@ async function loadEvents() {
       const expand = card.querySelector(".event-expand");
       expand.onclick = () => expandEvent(card, event.id, expand);
       list.appendChild(card);
-      if (String(event.id) === new URLSearchParams(location.search).get("event")) expand.click();
+      if (String(event.id) === new URLSearchParams(location.search).get("event")) {
+        expand.click();
+        requestAnimationFrame(() => card.scrollIntoView({behavior: "smooth", block: "center"}));
+      }
     }
   } catch (error) {
     $("#event-error").textContent = error.message;

@@ -1,5 +1,5 @@
 .guest-nav-label { color: var(--muted); font-size: 13px; }
-.guest-admin-panel { margin-top: 54px; padding-top: 34px; border-top: 1px solid var(--line); }
+.guest-admin-panel { margin: 0; padding: 0; border-top: 1px solid var(--card-line); }
 .guest-admin-panel h2 { margin: 6px 0; }
 .guest-admin-panel .section-heading { align-items: flex-start; }
 .account-status { padding: 7px 10px; background: var(--soft); color: var(--green); font-size: 12px; }

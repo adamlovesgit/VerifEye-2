@@ -13,15 +13,15 @@
       document.documentElement.style.colorScheme = theme;
     })();
   </script>
-  <link rel="stylesheet" href="/assets/styles.css?v=multiple-identities-1">
-  <link rel="stylesheet" href="/assets/cameras.css?v=onvif-import-1">
+  <link rel="stylesheet" href="/assets/styles.css?v=dashboard-redesign-1">
+  <link rel="stylesheet" href="/assets/cameras.css?v=dashboard-redesign-1">
   <link rel="stylesheet" href="/assets/onvif.css?v=onvif-import-1">
-  <link rel="stylesheet" href="/assets/events.css?v=phase2-events-2">
+  <link rel="stylesheet" href="/assets/events.css?v=event-screenshot-alignment-1">
   <link rel="stylesheet" href="/assets/notifications.css?v=notifications-3">
   <link rel="stylesheet" href="/assets/webrtc.css?v=1">
-  <link rel="stylesheet" href="/assets/guest.css?v=1">
+  <link rel="stylesheet" href="/assets/guest.css?v=dashboard-redesign-1">
   <script src="/assets/mediamtx-reader.js?v=1.19.3" defer></script>
-  <script src="/assets/app.js?v=plan-b-roles-1" defer></script>
+  <script src="/assets/app.js?v=event-screenshot-alignment-1" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -65,22 +65,34 @@
 
     <section id="app-view" class="dashboard hidden">
       <section id="dashboard-page" class="app-page">
-        <div class="dashboard-head"><div><p class="eyebrow">Live recognition</p><h1>Camera dashboard.</h1><p>Monitor and control recognition streams on your local network.</p></div><button id="open-events" class="ghost">View events</button></div>
-        <section class="camera-section camera-primary">
-          <div class="section-heading"><div><p class="eyebrow">Camera management</p><h2>LAN cameras</h2><p>RTSP works over wired Ethernet or Wi-Fi.</p></div><button id="discover-onvif" class="ghost">Discover ONVIF</button></div>
-          <form id="camera-form" class="camera-form"><label>Camera name<input id="camera-name" maxlength="100" placeholder="Front door" required></label><label>RTSP URL<input id="camera-url" type="url" placeholder="rtsp://user:password@192.168.1.20/stream" required></label><button class="primary" type="submit"><span>Add and start camera</span><span>+</span></button><p id="camera-error" class="error" role="alert"></p></form>
-          <div id="onvif-panel" class="onvif-panel hidden"><p id="onvif-status">Searching the LAN…</p><div id="onvif-devices"></div></div><div id="camera-list" class="camera-list"><p class="empty">No cameras configured.</p></div>
+        <section class="camera-section camera-primary" aria-labelledby="live-cameras-title">
+          <div class="camera-stage-heading"><div><span id="camera-status-indicator" class="live-indicator status-off" aria-hidden="true"></span><div><p class="eyebrow">Monitoring now</p><h1 id="live-cameras-title">Live cameras</h1></div></div><p id="camera-system-status" aria-live="polite">Checking camera status…</p></div>
+          <div id="camera-list" class="camera-list"><p class="empty">No cameras configured.</p></div>
+          <p id="camera-error" class="error camera-page-error" role="alert"></p>
         </section>
-        <section class="guest-admin-panel">
-          <div class="section-heading"><div><p class="eyebrow">Shared access</p><h2>Guest camera login</h2><p>Create or rotate the preview-only shared account. Saving new credentials signs out every existing guest session.</p></div><span id="guest-account-status" class="account-status">Loading…</span></div>
-          <form id="guest-account-form" class="camera-form">
-            <label>Guest name<input id="guest-display-name" maxlength="100" value="Guest" required></label>
-            <label>Guest email<input id="guest-email" type="email" autocomplete="off" placeholder="guest@example.local" required></label>
-            <label>New password<input id="guest-password" type="password" autocomplete="new-password" minlength="8" placeholder="At least 8 characters" required></label>
-            <button class="primary" type="submit"><span>Save guest access</span><span>→</span></button>
-          </form>
-          <div class="guest-admin-actions"><p id="guest-account-error" class="error" role="alert"></p><button id="revoke-guest" class="ghost danger" type="button">Revoke guest access</button></div>
-        </section>
+        <div class="dashboard-tools" aria-label="Dashboard settings">
+          <details class="dashboard-disclosure" id="camera-management-panel">
+            <summary><span class="disclosure-icon" aria-hidden="true">+</span><span><strong>Add or manage cameras</strong><small>Connect an RTSP camera or discover ONVIF devices</small></span><span class="disclosure-chevron" aria-hidden="true"></span></summary>
+            <div class="disclosure-body">
+              <div class="section-heading"><div><p class="eyebrow">Camera management</p><h2>Connect a camera</h2><p>RTSP works over wired Ethernet or Wi-Fi.</p></div><button id="discover-onvif" class="ghost">Discover ONVIF</button></div>
+              <form id="camera-form" class="camera-form"><label>Camera name<input id="camera-name" maxlength="100" placeholder="Front door" required></label><label>RTSP URL<input id="camera-url" type="url" placeholder="rtsp://user:password@192.168.1.20/stream" required></label><button class="primary" type="submit"><span>Add and start camera</span><span>+</span></button></form>
+              <div id="onvif-panel" class="onvif-panel hidden"><p id="onvif-status">Searching the LAN…</p><div id="onvif-devices"></div></div>
+            </div>
+          </details>
+          <details class="dashboard-disclosure guest-admin-panel">
+            <summary><span class="disclosure-icon guest-icon" aria-hidden="true"></span><span><strong>Guest camera login</strong><small>Create and manage preview-only shared access</small></span><span id="guest-account-status" class="account-status">Loading…</span><span class="disclosure-chevron" aria-hidden="true"></span></summary>
+            <div class="disclosure-body">
+              <div class="section-heading"><div><p class="eyebrow">Shared access</p><h2>Guest camera login</h2><p>Saving new credentials signs out every existing guest session.</p></div></div>
+              <form id="guest-account-form" class="camera-form">
+                <label>Guest name<input id="guest-display-name" maxlength="100" value="Guest" required></label>
+                <label>Guest email<input id="guest-email" type="email" autocomplete="off" placeholder="guest@example.local" required></label>
+                <label>New password<input id="guest-password" type="password" autocomplete="new-password" minlength="8" placeholder="At least 8 characters" required></label>
+                <button class="primary" type="submit"><span>Save guest access</span><span>→</span></button>
+              </form>
+              <div class="guest-admin-actions"><p id="guest-account-error" class="error" role="alert"></p><button id="revoke-guest" class="ghost danger" type="button">Revoke guest access</button></div>
+            </div>
+          </details>
+        </div>
       </section>
       <section id="events-page" class="app-page hidden">
         <div class="dashboard-head"><div><p class="eyebrow">Recognition history</p><h1>Events.</h1><p>Review durable camera triggers, processing state, recognition outcomes, and failures.</p></div><button id="refresh-events" class="ghost">Refresh</button></div>

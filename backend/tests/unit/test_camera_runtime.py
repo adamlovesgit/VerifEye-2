@@ -113,6 +113,22 @@ class PreRollTests(unittest.TestCase):
         self.assertEqual(ReconnectingSource.maximum_active, 1)
         self.assertEqual(ReconnectingSource.active, 0)
 
+    def test_stop_does_not_close_source_from_the_calling_thread(self):
+        source = BlockingSource()
+        camera = Camera(1, "Door", "rtsp://camera", "camera", "manual", True)
+        capture = PreRollCapture(camera, "rtsp://router/preview", 2, .01,
+                                 source_factory=lambda *_: source)
+        capture.start()
+        self.assertTrue(source.entered.wait(1))
+        caller = threading.get_ident()
+        capture.request_stop()
+        self.assertEqual(source.close_threads, [])
+        with self.assertRaises(TimeoutError): capture.finish_stop(.01)
+        source.release.set(); capture._thread.join(1)
+        self.assertFalse(capture._thread.is_alive())
+        self.assertEqual(len(source.close_threads), 1)
+        self.assertNotEqual(source.close_threads[0], caller)
+
 
 class RecognitionCaptureTests(unittest.TestCase):
     def test_stop_does_not_close_source_from_the_calling_thread(self):

@@ -192,10 +192,10 @@ class PreRollCapture:
     def latest_after(self, sequence, timeout=None): return self.latest.get_after(sequence, timeout)
     def request_stop(self):
         self._stop.set()
-        with self._lock: source = self._source
-        if source:
-            try: source.close()
-            except Exception: pass
+        # The decoder thread owns the PyAV container.  Closing it here can race
+        # with ``decode()`` in FFmpeg native code and take down the whole API
+        # process.  MediaMTX path removal and the decoder timeout wake the
+        # thread; ``_run`` then closes the source from that same thread.
         self.latest.close(); self.publisher.close()
     def finish_stop(self, timeout):
         if self._thread:
