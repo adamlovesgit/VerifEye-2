@@ -131,9 +131,17 @@ $("#clear-event-filters").addEventListener("click", () => {
   $("#event-camera-filter").value = "";
   loadEvents();
 });
-$("#refresh-notifications").addEventListener("click", loadNotifications);
 $("#delivery-channel").addEventListener("change", loadNotificationDeliveries);
 $("#delivery-status").addEventListener("change", loadNotificationDeliveries);
+$("#rule-identity-filter").addEventListener("change", renderNotificationRules);
+$("#clear-notification-filters").addEventListener("click", event => {
+  $("#rule-identity-filter").value = "";
+  $("#delivery-channel").value = "";
+  $("#delivery-status").value = "";
+  renderNotificationRules();
+  loadNotificationDeliveries();
+  event.currentTarget.closest("details").open = false;
+});
 
 async function signOut() { try { await api("/api/auth/logout", { method: "POST" }); } finally { showAuth(); } }
 $("#logout").addEventListener("click", signOut);
@@ -601,13 +609,13 @@ async function loadIdentities(){
 let notificationSettings = null;
 
 function notificationRuleCard(rule) {
-  const card = document.createElement("article"); card.className = "notification-rule";
+  const card = document.createElement("details"); card.className = "notification-rule";
   const ruleTypes = {identity:{title:rule.identityName,subtitle:"When this identity is recognized",outcome:"recognized"},unknown_face:{title:"Unknown face",subtitle:"When any face in the full recognition session is not in the database",outcome:"unrecognized_face"},no_face:{title:"No face",subtitle:"When the full recognition session completes without detecting a face",outcome:"no_face"},system_error:{title:"System fallback",subtitle:"When recognition cannot complete because of a processing error",outcome:"processing_error"}};
   const ruleType = rule.ruleType, definition = ruleTypes[ruleType];
-  card.innerHTML = `<div class="rule-head"><div><h2></h2><p class="rule-subtitle"></p></div><button class="ghost danger delete-rule">Delete</button></div>
+  card.innerHTML = `<summary class="rule-head"><h2></h2><span class="disclosure-chevron" aria-hidden="true"></span></summary><div class="rule-body"><p class="rule-subtitle"></p>
     <div class="rule-grid"><label>Email address<input class="rule-email" type="email" maxlength="320" placeholder="alerts@example.com"></label><label>Phone number<input class="rule-phone" inputmode="tel" maxlength="32" placeholder="+15551234567"></label>
     <div class="check-row channel-checks"><label><input class="email-enabled" type="checkbox"> Email enabled</label><label><input class="sms-enabled" type="checkbox"> SMS enabled</label></div><div class="check-row outcome-checks"></div><div class="camera-checks"></div></div>
-    <p class="rule-feedback" role="status"></p><div class="rule-actions"><button type="button" class="ghost test-email">Test email</button><button type="button" class="ghost test-sms">Test SMS</button><button type="button" class="ghost save-rule">Save rule</button></div>`;
+    <p class="rule-feedback" role="status"></p><div class="rule-actions"><button type="button" class="ghost danger delete-rule">Delete rule</button><span class="rule-action-spacer"></span><button type="button" class="ghost test-email">Test email</button><button type="button" class="ghost test-sms">Test SMS</button><button type="button" class="ghost save-rule">Save rule</button></div></div>`;
   card.querySelector("h2").textContent = definition.title;
   card.querySelector(".rule-subtitle").textContent = definition.subtitle;
   card.querySelector(".rule-email").value = rule.emailAddress || ""; card.querySelector(".rule-phone").value = rule.phoneNumber || "";
@@ -634,13 +642,40 @@ async function loadNotifications(){
   try{
     notificationSettings=await api("/api/notification-settings");
     renderNewRuleTargets();
-    const providers=$("#provider-status");providers.innerHTML="";
-    for(const [channel,label] of [["email","SMTP email"],["sms","Twilio SMS"]]){const ready=notificationSettings.providers[channel].ready;const item=document.createElement("article");item.className="provider-card";item.innerHTML='<div><strong></strong><br><span></span></div><b class="provider-state"></b>';item.querySelector("strong").textContent=label;item.querySelector("span").textContent=ready?"Ready to deliver":"Configure server environment variables";item.querySelector("b").textContent=ready?"Ready":"Not configured";item.querySelector("b").classList.toggle("ready",ready);providers.appendChild(item);}
-    const list=$("#notification-rules");list.innerHTML=notificationSettings.rules.length?"":'<p class="empty">No notification rules configured.</p>';
-    notificationSettings.rules.forEach(rule=>list.appendChild(notificationRuleCard(rule)));
+    renderSmtpSettings();
+    renderNotificationRuleFilters();
+    renderNotificationRules();
     await loadNotificationDeliveries();
   }catch(error){$("#notification-error").textContent=error.message;if(error.status===401)showAuth();}
 }
+
+function renderSmtpSettings(){
+  const smtp=notificationSettings.providers.email,stateLabel=$("#smtp-provider-state");
+  stateLabel.textContent=smtp.ready?"Ready":"Not configured";stateLabel.classList.toggle("ready",smtp.ready);
+  $("#smtp-host").value=smtp.host||"";$("#smtp-port").value=smtp.port||587;$("#smtp-username").value=smtp.username||"";$("#smtp-sender").value=smtp.sender||"";$("#smtp-tls-mode").value=smtp.tlsMode||"starttls";$("#smtp-password").value="";$("#smtp-clear-password").checked=false;
+  $("#smtp-password").placeholder=smtp.passwordConfigured?"Saved — leave blank to keep":"Enter SMTP password if required";
+}
+
+function renderNotificationRuleFilters(){
+  const select=$("#rule-identity-filter"),selected=select.value;select.innerHTML='<option value="">All identities</option>';
+  for(const identity of notificationSettings.identities){const option=document.createElement("option");option.value=String(identity.id);option.textContent=identity.displayName;select.appendChild(option);}
+  if([...select.options].some(option=>option.value===selected))select.value=selected;
+}
+
+function renderNotificationRules(){
+  if(!notificationSettings)return;const selected=$("#rule-identity-filter").value;
+  const rules=selected?notificationSettings.rules.filter(rule=>String(rule.identityId)===selected):notificationSettings.rules;
+  const list=$("#notification-rules");list.innerHTML=rules.length?"":`<p class="empty">${selected?"No rules for this identity.":"No notification rules configured."}</p>`;
+  rules.forEach(rule=>list.appendChild(notificationRuleCard(rule)));
+}
+
+$("#smtp-settings-form").addEventListener("submit",async event=>{
+  event.preventDefault();if(!event.currentTarget.reportValidity())return;
+  const button=event.currentTarget.querySelector("button[type=submit]"),feedback=$("#smtp-settings-feedback");button.disabled=true;feedback.className="rule-feedback";feedback.textContent="Saving…";
+  try{const smtp=await api("/api/notification-settings/smtp",{method:"PUT",body:JSON.stringify({host:$("#smtp-host").value,port:Number($("#smtp-port").value),username:$("#smtp-username").value,password:$("#smtp-password").value||null,sender:$("#smtp-sender").value,tlsMode:$("#smtp-tls-mode").value,clearPassword:$("#smtp-clear-password").checked})});notificationSettings.providers.email=smtp;renderSmtpSettings();feedback.classList.add("success-text");feedback.textContent="SMTP settings saved.";}
+  catch(error){feedback.classList.add("error-text");feedback.textContent=error.message;}
+  finally{button.disabled=false;}
+});
 
 function renderNewRuleTargets(){
   if(!notificationSettings)return;

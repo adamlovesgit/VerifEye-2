@@ -56,7 +56,7 @@ def validate_phone(value: str | None) -> str | None:
     return value
 
 
-@dataclass(frozen=True)
+@dataclass
 class ProviderSettings:
     smtp_host: str = ""
     smtp_port: int = 587
@@ -76,6 +76,70 @@ class ProviderSettings:
     @property
     def sms_ready(self) -> bool:
         return bool(self.twilio_account_sid and self.twilio_auth_token and self.twilio_from_number)
+
+
+class NotificationProviderStore:
+    """Persist SMTP overrides while keeping the password encrypted at rest."""
+
+    def __init__(self, database: str | Path, cipher) -> None:
+        self.database, self.cipher = Path(database), cipher
+
+    def load(self, defaults: ProviderSettings) -> ProviderSettings:
+        connection = sqlite3.connect(str(self.database))
+        try:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute("SELECT * FROM notification_provider_settings WHERE id=1").fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            return defaults
+        password = self.cipher.decrypt(row["smtp_password_encrypted"]) if row["smtp_password_encrypted"] else ""
+        defaults.smtp_host, defaults.smtp_port = row["smtp_host"], int(row["smtp_port"])
+        defaults.smtp_username, defaults.smtp_password = row["smtp_username"], password
+        defaults.smtp_sender, defaults.smtp_tls_mode = row["smtp_sender"], row["smtp_tls_mode"]
+        return defaults
+
+    def save_smtp(self, payload: dict[str, Any], current: ProviderSettings) -> ProviderSettings:
+        host = str(payload.get("host") or "").strip()
+        username = str(payload.get("username") or "").strip()
+        sender = str(payload.get("sender") or "").strip()
+        tls_mode = str(payload.get("tlsMode") or "").lower()
+        port = int(payload.get("port") or 0)
+        if len(host) > 253 or len(username) > 320 or len(sender) > 320:
+            raise NotificationError("SMTP settings are too long.")
+        if not 1 <= port <= 65535 or tls_mode not in {"starttls", "ssl", "none"}:
+            raise NotificationError("Choose a valid SMTP port and TLS mode.")
+        if sender and not EMAIL_RE.fullmatch(sender):
+            raise NotificationError("Enter a valid SMTP sender email address.")
+        password = "" if payload.get("clearPassword") else payload.get("password")
+        if password is None or password == "":
+            password = "" if payload.get("clearPassword") else current.smtp_password
+        if len(password) > 1024:
+            raise NotificationError("SMTP password is too long.")
+        encrypted = self.cipher.encrypt(password) if password else None
+        now = iso(utcnow())
+        connection = sqlite3.connect(str(self.database))
+        try:
+            configure_connection(connection)
+            with connection:
+                connection.execute(
+                    """INSERT INTO notification_provider_settings(
+                           id,smtp_host,smtp_port,smtp_username,smtp_password_encrypted,
+                           smtp_sender,smtp_tls_mode,updated_at
+                       ) VALUES(1,?,?,?,?,?,?,?)
+                       ON CONFLICT(id) DO UPDATE SET smtp_host=excluded.smtp_host,
+                           smtp_port=excluded.smtp_port,smtp_username=excluded.smtp_username,
+                           smtp_password_encrypted=excluded.smtp_password_encrypted,
+                           smtp_sender=excluded.smtp_sender,smtp_tls_mode=excluded.smtp_tls_mode,
+                           updated_at=excluded.updated_at""",
+                    (host, port, username, encrypted, sender, tls_mode, now),
+                )
+        finally:
+            connection.close()
+        current.smtp_host, current.smtp_port = host, port
+        current.smtp_username, current.smtp_password = username, password
+        current.smtp_sender, current.smtp_tls_mode = sender, tls_mode
+        return current
 
 
 class NotificationRepository:

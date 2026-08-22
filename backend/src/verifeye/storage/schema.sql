@@ -263,3 +263,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_notification_delivery_session_rule_channel
     WHERE session_id IS NOT NULL AND outcome <> 'recognized';
 CREATE INDEX IF NOT EXISTS ix_notification_delivery_work
     ON notification_deliveries(status, available_at, lease_expires_at);
+
+CREATE TABLE IF NOT EXISTS notification_provider_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    smtp_host TEXT NOT NULL,
+    smtp_port INTEGER NOT NULL CHECK (smtp_port BETWEEN 1 AND 65535),
+    smtp_username TEXT NOT NULL,
+    smtp_password_encrypted BLOB,
+    smtp_sender TEXT NOT NULL,
+    smtp_tls_mode TEXT NOT NULL CHECK (smtp_tls_mode IN ('starttls', 'ssl', 'none')),
+    updated_at TEXT NOT NULL
+);

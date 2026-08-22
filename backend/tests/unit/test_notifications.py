@@ -7,7 +7,7 @@ from pathlib import Path
 from pydantic import ValidationError
 from verifeye.app import NotificationRulePayload
 from verifeye.events import EventRepository, utcnow
-from verifeye.notifications import NotificationError, NotificationRepository
+from verifeye.notifications import NotificationError, NotificationProviderStore, NotificationRepository, ProviderSettings
 
 
 SCHEMA = (Path(__file__).resolve().parents[2] / "src/verifeye/storage/schema.sql").read_text()
@@ -45,6 +45,30 @@ class NotificationRepositoryTests(unittest.TestCase):
         return self.notifications.save_rule({"identityId":1,"ruleType":"identity","emailAddress":"ada@example.com",
             "phoneNumber":"+15551234567","emailEnabled":True,"smsEnabled":True,
             "cameraIds":[]})
+
+    def test_smtp_overrides_are_encrypted_persistent_and_keep_blank_password(self):
+        class Cipher:
+            def encrypt(self, value): return value[::-1].encode()
+            def decrypt(self, value): return value.decode()[::-1]
+
+        store = NotificationProviderStore(self.database, Cipher())
+        current = ProviderSettings(smtp_password="environment-secret")
+        store.save_smtp({"host":"smtp.example.com","port":465,"username":"ada",
+            "password":"saved-secret","sender":"alerts@example.com","tlsMode":"ssl",
+            "clearPassword":False}, current)
+        connection = sqlite3.connect(self.database)
+        encrypted = connection.execute(
+            "SELECT smtp_password_encrypted FROM notification_provider_settings WHERE id=1"
+        ).fetchone()[0]
+        connection.close()
+        self.assertNotIn(b"saved-secret", encrypted)
+        loaded = store.load(ProviderSettings())
+        self.assertEqual(loaded.smtp_host, "smtp.example.com")
+        self.assertEqual(loaded.smtp_password, "saved-secret")
+        store.save_smtp({"host":"mail.example.com","port":587,"username":"ada",
+            "password":None,"sender":"alerts@example.com","tlsMode":"starttls",
+            "clearPassword":False}, loaded)
+        self.assertEqual(store.load(ProviderSettings()).smtp_password, "saved-secret")
 
     def test_rule_crud_validation_and_optimistic_version(self):
         rule_id = self.save_identity_rule()

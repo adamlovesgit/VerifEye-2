@@ -17,11 +17,11 @@
   <link rel="stylesheet" href="/assets/cameras.css?v=dashboard-redesign-1">
   <link rel="stylesheet" href="/assets/onvif.css?v=onvif-import-1">
   <link rel="stylesheet" href="/assets/events.css?v=events-rounded-1">
-  <link rel="stylesheet" href="/assets/notifications.css?v=notifications-3">
+  <link rel="stylesheet" href="/assets/notifications.css?v=collapsed-rules-1">
   <link rel="stylesheet" href="/assets/webrtc.css?v=1">
   <link rel="stylesheet" href="/assets/guest.css?v=dashboard-redesign-1">
   <script src="/assets/mediamtx-reader.js?v=1.19.3" defer></script>
-  <script src="/assets/app.js?v=identity-references-1" defer></script>
+  <script src="/assets/app.js?v=collapsed-rules-1" defer></script>
 </head>
 <body>
   <header class="topbar">
@@ -110,8 +110,20 @@
         <p id="identity-error" class="error" role="alert"></p><div id="identity-list" class="identity-list"><p class="empty">No identities enrolled.</p></div>
       </section>
       <section id="notifications-page" class="app-page hidden">
-        <div class="dashboard-head"><div><p class="eyebrow">Outbound alerts</p><h1>Notifications.</h1><p>Route completed recognition events through email and SMS.</p></div><button id="refresh-notifications" class="ghost">Refresh</button></div>
-        <div id="provider-status" class="provider-grid"></div>
+        <div class="notification-page-head"><h1>Notifications</h1><details class="event-filter-menu notification-filter-menu"><summary>Filters<span class="filter-chevron" aria-hidden="true"></span></summary><div class="event-filter-popover"><label>Rules by identity<select id="rule-identity-filter"><option value="">All identities</option></select></label><label>Delivery channel<select id="delivery-channel"><option value="">All channels</option><option value="email">Email</option><option value="sms">SMS</option></select></label><label>Delivery status<select id="delivery-status"><option value="">All statuses</option><option value="queued">Queued</option><option value="retrying">Retrying</option><option value="sent">Sent</option><option value="failed">Failed</option></select></label><button id="clear-notification-filters" class="filter-clear" type="button">Clear filters</button></div></details></div>
+        <details id="smtp-provider" class="smtp-provider-card">
+          <summary><span><strong>SMTP email</strong><small>Outgoing email provider</small></span><b id="smtp-provider-state" class="provider-state">Checking</b><span class="disclosure-chevron" aria-hidden="true"></span></summary>
+          <form id="smtp-settings-form" class="smtp-settings-form">
+            <label>SMTP host<input id="smtp-host" maxlength="253" placeholder="smtp.example.com"></label>
+            <label>Port<input id="smtp-port" type="number" min="1" max="65535" value="587" required></label>
+            <label>Username<input id="smtp-username" maxlength="320" autocomplete="username"></label>
+            <label>Password<input id="smtp-password" type="password" maxlength="1024" autocomplete="new-password" placeholder="Leave blank to keep saved password"></label>
+            <label>Sender email<input id="smtp-sender" type="email" maxlength="320" placeholder="alerts@example.com"></label>
+            <label>TLS mode<select id="smtp-tls-mode"><option value="starttls">STARTTLS</option><option value="ssl">SSL/TLS</option><option value="none">None</option></select></label>
+            <label class="smtp-clear-password"><input id="smtp-clear-password" type="checkbox"> Clear saved password</label>
+            <div class="smtp-actions"><p id="smtp-settings-feedback" class="rule-feedback" role="status"></p><button class="primary compact" type="submit">Save SMTP settings <span>→</span></button></div>
+          </form>
+        </details>
         <div class="notification-toolbar"><div><strong>Alert rules</strong><span>New channels remain off until you enable them</span></div><button id="add-notification-rule" class="ghost">Add rule</button></div>
         <div id="new-notification-rule" class="new-rule-panel hidden">
           <label>Rule target<select id="new-rule-target"></select></label>
@@ -119,7 +131,7 @@
         </div>
         <p id="notification-error" class="error" role="alert"></p>
         <div id="notification-rules" class="notification-rules"><p class="empty">No notification rules configured.</p></div>
-        <div class="notification-toolbar"><div><strong>Delivery history</strong><span>Most recent attempts first</span></div><div class="delivery-filters"><select id="delivery-channel"><option value="">All channels</option><option value="email">Email</option><option value="sms">SMS</option></select><select id="delivery-status"><option value="">All statuses</option><option value="queued">Queued</option><option value="retrying">Retrying</option><option value="sent">Sent</option><option value="failed">Failed</option></select></div></div>
+        <div class="notification-toolbar"><div><strong>Delivery history</strong><span>Most recent attempts first</span></div></div>
         <div id="notification-deliveries" class="delivery-list"><p class="empty">No deliveries yet.</p></div>
       </section>
       <section id="guest-cameras-page" class="app-page hidden">

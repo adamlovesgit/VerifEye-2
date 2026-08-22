@@ -33,7 +33,7 @@ from .events import (
 )
 from .onvif_events import OnvifEventManager
 from .recognition import IdentityMatcher, RecognitionEngine
-from .notifications import NotificationError, NotificationRepository, NotificationWorker, ProviderSettings
+from .notifications import NotificationError, NotificationProviderStore, NotificationRepository, NotificationWorker, ProviderSettings
 from .request_diagnostics import RequestDiagnostics
 from .storage import EmbeddingStore
 
@@ -115,6 +115,18 @@ class NotificationRulePayload(BaseModel):
 class NotificationTestPayload(BaseModel):
     rule_id: int = Field(alias="ruleId")
     channel: str
+
+
+class SmtpSettingsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    host: str = Field(default="", max_length=253)
+    port: int = Field(default=587, ge=1, le=65535)
+    username: str = Field(default="", max_length=320)
+    password: str | None = Field(default=None, max_length=1024)
+    sender: str = Field(default="", max_length=320)
+    tls_mode: Literal["starttls", "ssl", "none"] = Field(default="starttls", alias="tlsMode")
+    clear_password: bool = Field(default=False, alias="clearPassword")
 
 
 class MediaAuthRequest(BaseModel):
@@ -253,10 +265,13 @@ async def lifespan(application: FastAPI):
         settings.smtp_sender, settings.smtp_tls_mode, settings.twilio_account_sid,
         settings.twilio_auth_token, settings.twilio_from_number, settings.public_base_url,
     )
+    provider_store = NotificationProviderStore(settings.database, cipher)
+    providers = provider_store.load(providers)
     notifications = NotificationRepository(settings.database, settings.sqlite_busy_timeout_ms)
     notification_worker = NotificationWorker(notifications, providers, settings.event_screenshot_dir)
     sink.notification_callback = lambda session_id: notifications.enqueue_session(session_id, providers.public_base_url)
     application.state.notifications, application.state.notification_providers = notifications, providers
+    application.state.notification_provider_store = provider_store
     application.state.notification_worker = notification_worker
     try:
         media_process.start()
@@ -474,8 +489,24 @@ def delete_identity(identity_id: int, _user=Depends(current_user)):
 def notification_settings(_user=Depends(current_user)):
     value = app.state.notifications.settings()
     providers = app.state.notification_providers
-    value["providers"] = {"email": {"ready": providers.email_ready}, "sms": {"ready": providers.sms_ready}}
+    value["providers"] = {"email": {"ready": providers.email_ready, "host": providers.smtp_host,
+        "port": providers.smtp_port, "username": providers.smtp_username, "sender": providers.smtp_sender,
+        "tlsMode": providers.smtp_tls_mode, "passwordConfigured": bool(providers.smtp_password)},
+        "sms": {"ready": providers.sms_ready}}
     return value
+
+
+@app.put("/api/notification-settings/smtp")
+def update_smtp_settings(payload: SmtpSettingsPayload, _user=Depends(current_user)):
+    try:
+        providers = app.state.notification_provider_store.save_smtp(
+            payload.model_dump(by_alias=True), app.state.notification_providers
+        )
+    except NotificationError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"ready": providers.email_ready, "host": providers.smtp_host, "port": providers.smtp_port,
+            "username": providers.smtp_username, "sender": providers.smtp_sender,
+            "tlsMode": providers.smtp_tls_mode, "passwordConfigured": bool(providers.smtp_password)}
 
 
 def notification_payload(payload: NotificationRulePayload) -> dict:
