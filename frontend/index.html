@@ -13,7 +13,7 @@
       document.documentElement.style.colorScheme = theme;
     })();
   </script>
-  <link rel="stylesheet" href="/assets/styles.css?v=identities-redesign-1">
+  <link rel="stylesheet" href="/assets/styles.css?v=auth-polish-1">
   <link rel="stylesheet" href="/assets/cameras.css?v=dashboard-redesign-1">
   <link rel="stylesheet" href="/assets/onvif.css?v=onvif-import-1">
   <link rel="stylesheet" href="/assets/events.css?v=events-rounded-1">
@@ -21,20 +21,22 @@
   <link rel="stylesheet" href="/assets/webrtc.css?v=1">
   <link rel="stylesheet" href="/assets/guest.css?v=dashboard-redesign-1">
   <script src="/assets/mediamtx-reader.js?v=1.19.3" defer></script>
-  <script src="/assets/app.js?v=collapsed-rules-1" defer></script>
+  <script src="/assets/app.js?v=auth-polish-1" defer></script>
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/" aria-label="VerifEye home"><span class="mark" aria-hidden="true"></span>VerifEye</a>
-    <div class="topbar-actions"><div id="app-nav" class="app-nav hidden"><button class="nav-link active" data-page="dashboard">Dashboard</button><button class="nav-link" data-page="events">Events</button><button class="nav-link" data-page="identities">Identities</button><button class="nav-link" data-page="notifications">Notifications</button><button id="logout" class="ghost">Sign out</button></div><div id="guest-nav" class="app-nav hidden"><span class="guest-nav-label">Camera view</span><button id="guest-logout" class="ghost">Sign out</button></div><div id="privacy-badge" class="privacy"><span></span> Local & private</div><button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false"><span class="theme-icon" aria-hidden="true">☾</span><span class="theme-label">Dark</span></button></div>
+    <div id="brand-menu" class="brand-menu">
+      <button id="brand-menu-toggle" class="brand" type="button" aria-expanded="false" aria-controls="brand-menu-panel"><span class="mark" aria-hidden="true"></span><span>VerifEye</span><span class="brand-chevron" aria-hidden="true"></span></button>
+      <div id="brand-menu-panel" class="brand-menu-panel" aria-hidden="true" inert><div class="topbar-actions"><div id="app-nav" class="app-nav hidden"><button class="nav-link active" data-page="dashboard">Dashboard</button><button class="nav-link" data-page="events">Events</button><button class="nav-link" data-page="identities">Identities</button><button class="nav-link" data-page="notifications">Notifications</button><button id="logout" class="ghost">Sign out</button></div><div id="guest-nav" class="app-nav hidden"><span class="guest-nav-label">Camera view</span><button id="guest-logout" class="ghost">Sign out</button></div><div id="privacy-badge" class="privacy"><span></span> Local & private</div><button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false"><span class="theme-icon" aria-hidden="true">☾</span><span class="theme-label">Dark</span></button></div></div>
+    </div>
   </header>
 
   <main>
     <section id="auth-view" class="auth-layout">
       <div class="intro">
         <p class="eyebrow">Your space. Your data.</p>
-        <h1>Recognition that<br><em>stays with you.</em></h1>
-        <p class="lede">A self-hosted security system built around privacy. Your biometric data never leaves your device.</p>
+        <h1>VerifEye</h1>
+        <p class="auth-tagline"><em>Security that stays private.</em></p>
         <div class="feature-list">
           <div><span>01</span><p><strong>Local by design</strong>Your data lives on your hardware.</p></div>
           <div><span>02</span><p><strong>Built for privacy</strong>No cloud accounts or third-party tracking.</p></div>
@@ -55,7 +57,8 @@
         <form id="auth-form" novalidate>
           <label id="name-field" class="hidden">Full name<input id="display-name" name="displayName" autocomplete="name" placeholder="Ada Lovelace"></label>
           <label>Email address<input id="email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required></label>
-          <label>Password<input id="password" name="password" type="password" autocomplete="current-password" placeholder="At least 8 characters" required minlength="8"></label>
+          <label>Password<span class="password-control"><input id="password" name="password" type="password" autocomplete="current-password" placeholder="At least 8 characters" required minlength="8"><button id="password-visibility" type="button" aria-label="Show password" aria-pressed="false"><span aria-hidden="true"></span></button></span></label>
+          <label id="confirm-password-field" class="hidden">Re-enter password<span class="password-control"><input id="confirm-password" name="confirmPassword" type="password" autocomplete="new-password" placeholder="Enter the password again" minlength="8"></span></label>
           <p id="auth-error" class="error" role="alert"></p>
           <button class="primary" type="submit"><span id="submit-label">Sign in</span><span aria-hidden="true">→</span></button>
         </form>

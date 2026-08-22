@@ -1,6 +1,46 @@
 const $ = (selector) => document.querySelector(selector);
 const state = { mode: "login", token: localStorage.getItem("verifeye_token"), file: null, streamStops: new Map(), identityImageUrls: new Set(), currentUser: null, cameraLoadController: null, cameraLoadGeneration: 0, cameraEventPoll: null, setupRequired: false };
 
+function setBrandMenu(open) {
+  $("#brand-menu").classList.toggle("open", open);
+  $("#brand-menu-toggle").setAttribute("aria-expanded", String(open));
+  $("#brand-menu-panel").setAttribute("aria-hidden", String(!open));
+  $("#brand-menu-panel").inert = !open;
+}
+
+$("#brand-menu-toggle").addEventListener("click", () => setBrandMenu(!$("#brand-menu").classList.contains("open")));
+document.addEventListener("click", event => { if (!$("#brand-menu").contains(event.target)) setBrandMenu(false); });
+document.addEventListener("keydown", event => { if (event.key === "Escape") { setBrandMenu(false); $("#brand-menu-toggle").focus(); } });
+
+const brandEye = $(".mark");
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+let eyeTrackingFrame = null;
+function centerBrandEye() {
+  brandEye.style.setProperty("--pupil-x", "0px");
+  brandEye.style.setProperty("--pupil-y", "0px");
+}
+document.addEventListener("pointermove", event => {
+  if (event.pointerType === "touch" || reducedMotion.matches) return;
+  cancelAnimationFrame(eyeTrackingFrame);
+  eyeTrackingFrame = requestAnimationFrame(() => {
+    const rect = brandEye.getBoundingClientRect();
+    const dx = event.clientX - (rect.left + rect.width / 2);
+    const dy = event.clientY - (rect.top + rect.height / 2);
+    const distance = Math.hypot(dx, dy) || 1;
+    const strength = Math.min(1, distance / 90);
+    brandEye.style.setProperty("--pupil-x", `${(dx / distance) * 4.2 * strength}px`);
+    brandEye.style.setProperty("--pupil-y", `${(dy / distance) * 2.8 * strength}px`);
+  });
+}, {passive: true});
+document.addEventListener("click", () => {
+  brandEye.classList.remove("blinking");
+  void brandEye.offsetWidth;
+  brandEye.classList.add("blinking");
+});
+brandEye.addEventListener("animationend", () => brandEye.classList.remove("blinking"));
+window.addEventListener("blur", centerBrandEye);
+reducedMotion.addEventListener("change", event => { if (event.matches) centerBrandEye(); });
+
 function setTheme(theme) {
   const dark = theme === "dark";
   document.documentElement.dataset.theme = theme;
@@ -41,6 +81,9 @@ function setMode(mode) {
   $("#register-tab").setAttribute("aria-selected", String(registering));
   $("#name-field").classList.toggle("hidden", !registering);
   $("#display-name").required = registering;
+  $("#confirm-password-field").classList.toggle("hidden", !registering);
+  $("#confirm-password").required = registering;
+  if (!registering) $("#confirm-password").value = "";
   $("#password").autocomplete = registering ? "new-password" : "current-password";
   $("#form-title").textContent = registering ? "Make it yours." : "Good to see you.";
   $("#form-subtitle").textContent = registering ? "Create your private, local account." : "Sign in to manage your identity.";
@@ -49,6 +92,7 @@ function setMode(mode) {
 }
 
 function showDashboard(user) {
+  setBrandMenu(false);
   state.currentUser = user;
   $("#auth-view").classList.add("hidden");
   $("#app-view").classList.remove("hidden");
@@ -68,6 +112,7 @@ function showDashboard(user) {
 }
 
 function showAuth() {
+  setBrandMenu(false);
   stopAllStreams();
   stopCameraDashboardUpdates();
   clearIdentityImageUrls();
@@ -90,13 +135,26 @@ async function refreshSetupStatus() {
 
 $("#login-tab").addEventListener("click", () => setMode("login"));
 $("#register-tab").addEventListener("click", () => setMode("register"));
+$("#password-visibility").addEventListener("click", event => {
+  const visible = $("#password").type === "text";
+  $("#password").type = visible ? "password" : "text";
+  $("#confirm-password").type = visible ? "password" : "text";
+  event.currentTarget.setAttribute("aria-label", visible ? "Show password" : "Hide password");
+  event.currentTarget.setAttribute("aria-pressed", String(!visible));
+});
 $("#auth-form").addEventListener("submit", async (event) => {
   event.preventDefault(); const form = event.currentTarget;
   if (!form.reportValidity()) return;
+  if (state.mode === "register" && $("#password").value !== $("#confirm-password").value) {
+    $("#auth-error").textContent = "Passwords do not match.";
+    $("#confirm-password").focus();
+    return;
+  }
   const button = form.querySelector("button[type=submit]"); button.disabled = true;
   $("#auth-error").textContent = "";
   try {
-    const data = await api(`/api/auth/${state.mode}`, { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form))) });
+    const payload = Object.fromEntries(new FormData(form));
+    const data = await api(`/api/auth/${state.mode}`, { method: "POST", body: JSON.stringify(payload) });
     state.token = data.token; localStorage.setItem("verifeye_token", data.token); showDashboard(data.user);
   } catch (error) { $("#auth-error").textContent = error.message; }
   finally { button.disabled = false; }
@@ -122,7 +180,7 @@ function showPage(page) {
     if (page === "events") loadEventPage(); else if (page === "identities") loadIdentities(); else loadNotifications();
   }
 }
-document.querySelectorAll(".nav-link").forEach(button => button.addEventListener("click", () => showPage(button.dataset.page)));
+document.querySelectorAll(".nav-link").forEach(button => button.addEventListener("click", () => { showPage(button.dataset.page); setBrandMenu(false); }));
 $("#open-enrollment").addEventListener("click", () => $("#enrollment-panel").classList.toggle("hidden"));
 $("#event-state-filter").addEventListener("change", loadEvents);
 $("#event-camera-filter").addEventListener("change", loadEvents);

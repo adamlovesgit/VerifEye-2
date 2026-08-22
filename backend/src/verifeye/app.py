@@ -361,6 +361,8 @@ def setup_status():
 
 @app.post("/api/auth/register", status_code=201)
 def register(payload: dict):
+    if "confirmPassword" in payload and payload.get("password") != payload.get("confirmPassword"):
+        raise HTTPException(400, "Passwords do not match.")
     try:
         with EmbeddingStore(app.state.settings.database) as store:
             auth = AuthStore(store._connection); user = auth.create_initial_admin(str(payload.get("email", "")), str(payload.get("displayName", "")), str(payload.get("password", ""))); token = auth.create_session(user.id)
