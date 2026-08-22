@@ -16,22 +16,28 @@
   <script>
     (async () => {
       const status = document.querySelector("#status");
-      const id = new URLSearchParams(location.search).get("id");
+      const params = new URLSearchParams(location.search);
+      const id = params.get("id");
+      const embeddingId = params.get("embedding");
+      if (embeddingId) document.title = "Enrollment reference";
       const token = localStorage.getItem("verifeye_token");
-      if (!/^\d+$/.test(id || "")) { status.textContent = "Invalid screenshot link."; return; }
+      const isEventImage = /^\d+$/.test(id || "");
+      const isEmbeddingImage = /^\d+$/.test(embeddingId || "");
+      if (!isEventImage && !isEmbeddingImage) { status.textContent = "Invalid image link."; return; }
       if (!token) { status.textContent = "Your session has expired. Return to VerifEye and sign in again."; return; }
       try {
-        const response = await fetch(`/api/screenshots/${id}`, {
+        const path = isEmbeddingImage ? `/api/embeddings/${embeddingId}/reference-image` : `/api/screenshots/${id}`;
+        const response = await fetch(path, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!response.ok) {
-          let message = "The event image could not be loaded.";
+          let message = "The image could not be loaded.";
           try { message = (await response.json()).detail || message; } catch (_) {}
           throw new Error(message);
         }
         const objectUrl = URL.createObjectURL(await response.blob());
         const image = document.createElement("img");
-        image.alt = "Camera event image";
+        image.alt = embeddingId ? "Enrollment reference with face boxes and landmarks" : "Camera event image";
         image.src = objectUrl;
         status.replaceWith(image);
         addEventListener("pagehide", () => URL.revokeObjectURL(objectUrl), { once: true });

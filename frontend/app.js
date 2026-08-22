@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { mode: "login", token: localStorage.getItem("verifeye_token"), file: null, streamStops: new Map(), currentUser: null, cameraLoadController: null, cameraLoadGeneration: 0, cameraEventPoll: null, setupRequired: false };
+const state = { mode: "login", token: localStorage.getItem("verifeye_token"), file: null, streamStops: new Map(), identityImageUrls: new Set(), currentUser: null, cameraLoadController: null, cameraLoadGeneration: 0, cameraEventPoll: null, setupRequired: false };
 
 function setTheme(theme) {
   const dark = theme === "dark";
@@ -70,6 +70,7 @@ function showDashboard(user) {
 function showAuth() {
   stopAllStreams();
   stopCameraDashboardUpdates();
+  clearIdentityImageUrls();
   state.token = null; localStorage.removeItem("verifeye_token");
   state.currentUser = null;
   $("#app-view").classList.add("hidden"); $("#auth-view").classList.remove("hidden");
@@ -112,6 +113,7 @@ function showPage(page) {
   $("#identities-page").classList.toggle("hidden", page !== "identities");
   $("#notifications-page").classList.toggle("hidden", page !== "notifications");
   $("#guest-cameras-page").classList.add("hidden");
+  if (page !== "identities") clearIdentityImageUrls();
   document.querySelectorAll(".nav-link").forEach(button => button.classList.toggle("active", button.dataset.page === page));
   if (page === "dashboard") { loadCameras(); loadGuestAccount(); }
   else {
@@ -122,7 +124,6 @@ function showPage(page) {
 }
 document.querySelectorAll(".nav-link").forEach(button => button.addEventListener("click", () => showPage(button.dataset.page)));
 $("#open-enrollment").addEventListener("click", () => $("#enrollment-panel").classList.toggle("hidden"));
-$("#refresh-identities").addEventListener("click", loadIdentities);
 $("#event-state-filter").addEventListener("change", loadEvents);
 $("#event-camera-filter").addEventListener("change", loadEvents);
 $("#clear-event-filters").addEventListener("click", () => {
@@ -580,12 +581,19 @@ async function loadEventCameraFilters() {
   }
 }
 
+function clearIdentityImageUrls(){for(const url of state.identityImageUrls)URL.revokeObjectURL(url);state.identityImageUrls.clear();}
+async function loadIdentityReference(link,embeddingId){
+  if(link.dataset.loaded)return;link.dataset.loaded="true";
+  try{const response=await fetch(`/api/embeddings/${embeddingId}/reference-image`,{headers:{Authorization:`Bearer ${state.token}`}});if(!response.ok){let message="Reference unavailable";try{message=(await response.json()).detail||message;}catch(_){}throw new Error(message);}const url=URL.createObjectURL(await response.blob());state.identityImageUrls.add(url);const image=document.createElement("img");image.src=url;image.alt="Enrollment reference with face boxes and landmarks";link.querySelector("span").replaceWith(image);}
+  catch(error){link.querySelector("span").textContent=error.message;link.classList.add("reference-error");}
+}
 async function loadIdentities(){
-  if(!state.token)return; const list=$("#identity-list"); $("#identity-error").textContent="";
-  try{const identities=await api("/api/identities"); $("#identity-count").textContent=identities.length+(identities.length===1?" identity":" identities"); list.innerHTML=identities.length?"":"<p class=empty>No identities enrolled.</p>";
-    for(const identity of identities){const card=document.createElement("article");card.className="identity-card";card.innerHTML="<div class=identity-summary><div class=identity-avatar></div><div><h2></h2><p class=identity-id></p></div><button class=delete-identity>Delete identity</button></div><div class=identity-facts><div><span>Face records</span><strong>"+identity.embeddings.length+"</strong></div><div><span>Created</span><strong>"+formatDate(identity.createdAt)+"</strong></div><div><span>Last updated</span><strong>"+formatDate(identity.updatedAt)+"</strong></div></div><details><summary>View biometric metadata</summary><div class=embedding-list></div></details>";
+  if(!state.token)return;const list=$("#identity-list"); $("#identity-error").textContent="";
+  try{const identities=await api("/api/identities");clearIdentityImageUrls(); $("#identity-count").textContent=identities.length+(identities.length===1?" identity":" identities"); list.innerHTML=identities.length?"":"<p class=empty>No identities enrolled.</p>";
+    for(const identity of identities){const card=document.createElement("article");card.className="identity-card";card.innerHTML="<div class=identity-summary><div class=identity-avatar></div><div><h2></h2><p class=identity-id></p></div><button class=delete-identity>Delete identity</button></div><div class=identity-facts><div><span>Face records</span><strong>"+identity.embeddings.length+"</strong></div><div><span>Created</span><strong>"+formatDate(identity.createdAt)+"</strong></div><div><span>Last updated</span><strong>"+formatDate(identity.updatedAt)+"</strong></div></div><details><summary>View biometric data</summary><div class=embedding-list></div></details>";
       card.querySelector(".identity-avatar").textContent=(identity.displayName||"?").trim().charAt(0).toUpperCase();card.querySelector("h2").textContent=identity.displayName;card.querySelector(".identity-id").textContent=identity.externalId;const records=card.querySelector(".embedding-list");if(!identity.embeddings.length)records.innerHTML="<p class=empty>No face records.</p>";
-      for(const item of identity.embeddings){const row=document.createElement("div");row.className="embedding-row";row.innerHTML="<div><strong></strong><span></span></div><div><span>Detection</span><strong></strong></div><div><span>Vector</span><strong></strong></div>";const parts=row.querySelectorAll("div");parts[0].querySelector("strong").textContent=item.metadata.original_name||item.sourcePath||"Unknown source";parts[0].querySelector("span").textContent=formatDate(item.createdAt);parts[1].querySelector("strong").textContent=item.detectionScore==null?"—":Math.round(item.detectionScore*100)+"%";parts[2].querySelector("strong").textContent=item.dimensions+"d";records.appendChild(row);}
+      for(const item of identity.embeddings){const row=document.createElement("div");row.className="embedding-row";row.innerHTML='<a class="embedding-reference" target="_blank" rel="noopener"><span class="reference-status">Loading reference…</span><small class="reference-key">Green face · Red crop · Blue landmarks</small></a><div><strong></strong><span></span></div><div><span>Detection</span><strong></strong></div><div><span>Vector</span><strong></strong></div>';const reference=row.querySelector(".embedding-reference");reference.href=`/assets/image-viewer.html?embedding=${encodeURIComponent(item.id)}`;reference.dataset.embeddingId=String(item.id);const parts=row.querySelectorAll(":scope > div");parts[0].querySelector("strong").textContent=item.metadata.original_name||item.sourcePath||"Unknown source";parts[0].querySelector("span").textContent=formatDate(item.createdAt);parts[1].querySelector("strong").textContent=item.detectionScore==null?"—":Math.round(item.detectionScore*100)+"%";parts[2].querySelector("strong").textContent=item.dimensions+"d";records.appendChild(row);}
+      const details=card.querySelector("details");details.addEventListener("toggle",()=>{if(details.open)details.querySelectorAll(".embedding-reference").forEach(link=>loadIdentityReference(link,link.dataset.embeddingId));});
       const remove=card.querySelector(".delete-identity");remove.className="ghost danger delete-identity";remove.onclick=async()=>{if(!confirm("Delete "+identity.displayName+" and all enrolled face records? This cannot be undone."))return;try{await api("/api/identities/"+identity.id,{method:"DELETE"});loadIdentities();}catch(error){$("#identity-error").textContent=error.message;}};list.appendChild(card);}
   }catch(error){$("#identity-error").textContent=error.message;if(error.status===401)showAuth();}
 }

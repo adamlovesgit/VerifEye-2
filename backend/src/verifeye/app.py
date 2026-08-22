@@ -445,6 +445,19 @@ def list_identities(_user=Depends(current_user)):
                 for identity in store.list_identities()]
 
 
+@app.get("/api/embeddings/{embedding_id}/reference-image")
+def get_embedding_reference_image(embedding_id: int, _user=Depends(current_user)):
+    try:
+        contents = app.state.enrollment.reference_image(embedding_id)
+    except KeyError as exc:
+        raise HTTPException(404, "Face record not found.") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "The enrollment reference image is unavailable.") from exc
+    except EnrollmentError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return Response(contents, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
+
+
 @app.delete("/api/identities/{identity_id}", status_code=204)
 def delete_identity(identity_id: int, _user=Depends(current_user)):
     with EmbeddingStore(app.state.settings.database) as store:

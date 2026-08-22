@@ -65,7 +65,7 @@ def annotate_frame(frame_bgr, faces: list, cfg):
 
 
 def detect_faces(frame_bgr, mp_ctx, min_conf=0.5):
-    """Return a list of ``(BoundingBox, landmarks[3])`` tuples."""
+    """Return bounding boxes and every landmark supplied by the face detector."""
     h, w, _ = frame_bgr.shape
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     result = mp_ctx.process(frame_rgb)
@@ -85,7 +85,7 @@ def detect_faces(frame_bgr, mp_ctx, min_conf=0.5):
 
             lmk_px = []
             rel_kp = det.location_data.relative_keypoints
-            for kp in rel_kp[:3]:
+            for kp in rel_kp:
                 lmk_px.append((int(kp.x * w), int(kp.y * h)))
 
             boxes_with_lmk.append(
