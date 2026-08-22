@@ -16,7 +16,7 @@
   <link rel="stylesheet" href="/assets/styles.css?v=dashboard-redesign-1">
   <link rel="stylesheet" href="/assets/cameras.css?v=dashboard-redesign-1">
   <link rel="stylesheet" href="/assets/onvif.css?v=onvif-import-1">
-  <link rel="stylesheet" href="/assets/events.css?v=event-screenshot-alignment-1">
+  <link rel="stylesheet" href="/assets/events.css?v=events-rounded-1">
   <link rel="stylesheet" href="/assets/notifications.css?v=notifications-3">
   <link rel="stylesheet" href="/assets/webrtc.css?v=1">
   <link rel="stylesheet" href="/assets/guest.css?v=dashboard-redesign-1">
@@ -95,8 +95,8 @@
         </div>
       </section>
       <section id="events-page" class="app-page hidden">
-        <div class="dashboard-head"><div><p class="eyebrow">Recognition history</p><h1>Events.</h1><p>Review durable camera triggers, processing state, recognition outcomes, and failures.</p></div><button id="refresh-events" class="ghost">Refresh</button></div>
-        <div class="event-toolbar"><div><strong id="event-count">0 events</strong><span>Newest events appear first</span></div><label>State<select id="event-state-filter"><option value="">All states</option><option value="accepted">Accepted</option><option value="dispatched">Dispatched</option><option value="completed">Completed</option><option value="failed">Failed</option></select></label></div>
+        <div class="event-page-head"><h1>Events</h1></div>
+        <div class="event-toolbar"><div><strong id="event-count">0 events</strong><span>Newest events appear first</span></div><details class="event-filter-menu"><summary>Filters<span class="filter-chevron" aria-hidden="true"></span></summary><div class="event-filter-popover"><label>State<select id="event-state-filter"><option value="">All states</option><option value="accepted">Accepted</option><option value="dispatched">Dispatched</option><option value="completed">Completed</option><option value="failed">Failed</option></select></label><label>Camera<select id="event-camera-filter"><option value="">All cameras</option></select></label><button id="clear-event-filters" class="filter-clear" type="button">Clear filters</button></div></details></div>
         <p id="event-error" class="error" role="alert"></p>
         <div id="event-list" class="event-list"><p class="empty">No camera events recorded.</p></div>
       </section>

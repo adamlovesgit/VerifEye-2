@@ -117,14 +117,19 @@ function showPage(page) {
   else {
     stopAllStreams();
     stopCameraDashboardUpdates();
-    if (page === "events") loadEvents(); else if (page === "identities") loadIdentities(); else loadNotifications();
+    if (page === "events") loadEventPage(); else if (page === "identities") loadIdentities(); else loadNotifications();
   }
 }
 document.querySelectorAll(".nav-link").forEach(button => button.addEventListener("click", () => showPage(button.dataset.page)));
 $("#open-enrollment").addEventListener("click", () => $("#enrollment-panel").classList.toggle("hidden"));
 $("#refresh-identities").addEventListener("click", loadIdentities);
-$("#refresh-events").addEventListener("click", loadEvents);
 $("#event-state-filter").addEventListener("change", loadEvents);
+$("#event-camera-filter").addEventListener("change", loadEvents);
+$("#clear-event-filters").addEventListener("click", () => {
+  $("#event-state-filter").value = "";
+  $("#event-camera-filter").value = "";
+  loadEvents();
+});
 $("#refresh-notifications").addEventListener("click", loadNotifications);
 $("#delivery-channel").addEventListener("change", loadNotificationDeliveries);
 $("#delivery-status").addEventListener("change", loadNotificationDeliveries);
@@ -337,6 +342,7 @@ function updateCameraSystemStatus(cameras) {
 function openCameraEvent(eventId) {
   history.pushState({}, "", `/?event=${encodeURIComponent(eventId)}`);
   $("#event-state-filter").value = "";
+  $("#event-camera-filter").value = "";
   showPage("events");
 }
 
@@ -356,7 +362,7 @@ async function refreshLatestCameraEvents(cameras, generation) {
         button.disabled = true;
         return;
       }
-      button.querySelector("strong").textContent = eventStateLabel(event.event_type);
+      button.querySelector("strong").textContent = eventTitleLabel(event.event_type);
       button.querySelector("small").textContent = `${eventStateLabel(event.state)} · ${formatDate(event.accepted_at)}`;
       button.disabled = false;
       button.onclick = () => openCameraEvent(event.id);
@@ -432,6 +438,10 @@ $("#revoke-guest").addEventListener("click", async event => {
 
 function eventStateLabel(value) {
   return value ? value.charAt(0).toUpperCase() + value.slice(1).replaceAll("_", " ") : "—";
+}
+
+function eventTitleLabel(value) {
+  return value === "onvif_motion" ? "MOTION" : eventStateLabel(value);
 }
 
 async function expandEvent(card, eventId, button) {
@@ -511,12 +521,14 @@ async function expandEvent(card, eventId, button) {
 async function loadEvents() {
   if (!state.token) return;
   const list = $("#event-list"), filter = $("#event-state-filter").value;
+  const cameraFilter = $("#event-camera-filter").value;
   $("#event-error").textContent = "";
   try {
     const events = [];
     for (let offset = 0;; offset += 200) {
       const query = new URLSearchParams({limit: "200", offset: String(offset)});
       if (filter) query.set("state", filter);
+      if (cameraFilter) query.set("camera_id", cameraFilter);
       const page = await api(`/api/camera-events?${query}`);
       events.push(...page);
       if (page.length < 200) break;
@@ -527,7 +539,7 @@ async function loadEvents() {
       const card = document.createElement("article"); card.className = "event-card";
       card.innerHTML = '<div class="event-summary"><div><span class="event-camera"></span><h2></h2><p></p></div><span class="event-state"></span><button class="ghost event-expand">View details</button></div><div class="event-detail hidden"></div>';
       card.querySelector(".event-camera").textContent = event.camera_name;
-      card.querySelector("h2").textContent = eventStateLabel(event.event_type);
+      card.querySelector("h2").textContent = eventTitleLabel(event.event_type);
       card.querySelector("p").textContent = `${formatDate(event.accepted_at)} · ${event.source_event_id}`;
       const badge = card.querySelector(".event-state");
       badge.className = `event-state event-state-${event.state}`; badge.textContent = eventStateLabel(event.state);
@@ -539,6 +551,29 @@ async function loadEvents() {
         requestAnimationFrame(() => card.scrollIntoView({behavior: "smooth", block: "center"}));
       }
     }
+  } catch (error) {
+    $("#event-error").textContent = error.message;
+    if (error.status === 401) showAuth();
+  }
+}
+
+async function loadEventPage() {
+  await loadEventCameraFilters();
+  await loadEvents();
+}
+
+async function loadEventCameraFilters() {
+  const select = $("#event-camera-filter"), selected = select.value;
+  try {
+    const cameras = await api("/api/cameras");
+    select.innerHTML = '<option value="">All cameras</option>';
+    for (const camera of cameras) {
+      const option = document.createElement("option");
+      option.value = String(camera.id);
+      option.textContent = camera.name;
+      select.appendChild(option);
+    }
+    if ([...select.options].some(option => option.value === selected)) select.value = selected;
   } catch (error) {
     $("#event-error").textContent = error.message;
     if (error.status === 401) showAuth();
