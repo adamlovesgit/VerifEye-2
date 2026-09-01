@@ -246,3 +246,9 @@ Configure SMTP with `VERIFEYE_SMTP_HOST`, `VERIFEYE_SMTP_PORT`,
 `VERIFEYE_TWILIO_ACCOUNT_SID`, `VERIFEYE_TWILIO_AUTH_TOKEN`, and
 `VERIFEYE_TWILIO_FROM_NUMBER`. Set `VERIFEYE_PUBLIC_BASE_URL` to the URL recipients
 can use to reach this VerifEye instance from notification links.
+
+For email, `sent`/`accepted` means the configured SMTP relay accepted the message;
+it does not guarantee inbox placement. The delivery history records a generated
+Message-ID for new email attempts so it can be correlated with the relay's
+transactional log. Verify the sender with the relay and inspect that log for a
+delivery, bounce, block, or suppression when an accepted message does not arrive.

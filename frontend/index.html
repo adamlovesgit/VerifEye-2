@@ -113,9 +113,9 @@
         <p id="identity-error" class="error" role="alert"></p><div id="identity-list" class="identity-list"><p class="empty">No identities enrolled.</p></div>
       </section>
       <section id="notifications-page" class="app-page hidden">
-        <div class="notification-page-head"><h1>Notifications</h1><details class="event-filter-menu notification-filter-menu"><summary>Filters<span class="filter-chevron" aria-hidden="true"></span></summary><div class="event-filter-popover"><label>Rules by identity<select id="rule-identity-filter"><option value="">All identities</option></select></label><label>Delivery channel<select id="delivery-channel"><option value="">All channels</option><option value="email">Email</option><option value="sms">SMS</option></select></label><label>Delivery status<select id="delivery-status"><option value="">All statuses</option><option value="queued">Queued</option><option value="retrying">Retrying</option><option value="sent">Sent</option><option value="failed">Failed</option></select></label><button id="clear-notification-filters" class="filter-clear" type="button">Clear filters</button></div></details></div>
+        <div class="notification-page-head"><h1>Notifications</h1><details class="event-filter-menu notification-filter-menu"><summary>Filters<span class="filter-chevron" aria-hidden="true"></span></summary><div class="event-filter-popover"><label>Rules by identity<select id="rule-identity-filter"><option value="">All identities</option></select></label><label>Delivery channel<select id="delivery-channel"><option value="">All channels</option><option value="email">Email</option><option value="sms">SMS</option></select></label><label>Delivery status<select id="delivery-status"><option value="">All statuses</option><option value="queued">Queued</option><option value="retrying">Retrying</option><option value="sent">Accepted/sent</option><option value="failed">Failed</option></select></label><button id="clear-notification-filters" class="filter-clear" type="button">Clear filters</button></div></details></div>
         <details id="smtp-provider" class="smtp-provider-card">
-          <summary><span><strong>SMTP email</strong><small>Outgoing email provider</small></span><b id="smtp-provider-state" class="provider-state">Checking</b><span class="disclosure-chevron" aria-hidden="true"></span></summary>
+          <summary><span><strong>SMTP email</strong><small>Outgoing email provider; configured does not guarantee inbox delivery</small></span><b id="smtp-provider-state" class="provider-state">Checking</b><span class="disclosure-chevron" aria-hidden="true"></span></summary>
           <form id="smtp-settings-form" class="smtp-settings-form">
             <label>SMTP host<input id="smtp-host" maxlength="253" placeholder="smtp.example.com"></label>
             <label>Port<input id="smtp-port" type="number" min="1" max="65535" value="587" required></label>
@@ -134,7 +134,7 @@
         </div>
         <p id="notification-error" class="error" role="alert"></p>
         <div id="notification-rules" class="notification-rules"><p class="empty">No notification rules configured.</p></div>
-        <div class="notification-toolbar"><div><strong>Delivery history</strong><span>Most recent attempts first</span></div></div>
+        <div class="notification-toolbar"><div><strong>Delivery history</strong><span>Email “accepted” means the SMTP relay accepted it; check the relay log for delivery, bounce, or suppression</span></div></div>
         <div id="notification-deliveries" class="delivery-list"><p class="empty">No deliveries yet.</p></div>
       </section>
       <section id="guest-cameras-page" class="app-page hidden">

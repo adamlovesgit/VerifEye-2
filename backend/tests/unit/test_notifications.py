@@ -7,7 +7,12 @@ from pathlib import Path
 from pydantic import ValidationError
 from verifeye.app import NotificationRulePayload
 from verifeye.events import EventRepository, utcnow
-from verifeye.notifications import NotificationError, NotificationProviderStore, NotificationRepository, ProviderSettings
+from unittest.mock import patch
+
+from verifeye.notifications import (
+    NotificationError, NotificationProviderStore, NotificationRepository,
+    NotificationWorker, PermanentDeliveryError, ProviderSettings,
+)
 
 
 SCHEMA = (Path(__file__).resolve().parents[2] / "src/verifeye/storage/schema.sql").read_text()
@@ -209,6 +214,54 @@ class NotificationRepositoryTests(unittest.TestCase):
         self.assertEqual(row["id"],delivery_id)
         self.notifications.failed(row,"temporary",False,5)
         self.assertEqual(self.notifications.deliveries()[0]["status"],"retrying")
+
+
+class NotificationWorkerEmailTests(unittest.TestCase):
+    class Repository:
+        @staticmethod
+        def screenshot(_screenshot_id): return None
+
+    @staticmethod
+    def row():
+        return {"channel":"email","destination":"person@example.com","is_test":1,
+                "outcome":"test","camera_name":"Test","occurred_at":utcnow().isoformat(),
+                "identity_name":None,"event_link":None,"screenshot_id":None}
+
+    def worker(self):
+        providers = ProviderSettings(smtp_host="smtp.example.com", smtp_port=587,
+            smtp_username="user", smtp_password="secret", smtp_sender="alerts@example.com",
+            smtp_tls_mode="starttls")
+        return NotificationWorker(self.Repository(), providers, Path("."))
+
+    def test_email_has_trace_id_and_exercises_starttls_and_authentication(self):
+        class Server:
+            def __init__(self, *_args, **_kwargs): self.ehlo_count = 0; self.message = None
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def ehlo(self): self.ehlo_count += 1
+            def starttls(self, **_kwargs): self.started_tls = True
+            def login(self, username, password): self.credentials = (username, password)
+            def send_message(self, message): self.message = message; return {}
+        server = Server()
+        with patch("verifeye.notifications.smtplib.SMTP", return_value=server):
+            message_id = self.worker()._send(self.row())
+        self.assertEqual(message_id, server.message["Message-ID"])
+        self.assertTrue(message_id.endswith("@example.com>"))
+        self.assertEqual(server.ehlo_count, 2)
+        self.assertTrue(server.started_tls)
+        self.assertEqual(server.credentials, ("user", "secret"))
+
+    def test_recipient_refusal_is_not_recorded_as_sent(self):
+        class Server:
+            def __init__(self, *_args, **_kwargs): pass
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def ehlo(self): pass
+            def starttls(self, **_kwargs): pass
+            def login(self, *_args): pass
+            def send_message(self, _message): return {"person@example.com": (550, b"blocked")}
+        with patch("verifeye.notifications.smtplib.SMTP", Server):
+            with self.assertRaises(PermanentDeliveryError): self.worker()._send(self.row())
 
 
 if __name__ == "__main__": unittest.main()

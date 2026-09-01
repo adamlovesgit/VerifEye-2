@@ -9,6 +9,7 @@ from email.message import EmailMessage
 from email.utils import make_msgid
 import html
 import json
+import logging
 import re
 import smtplib
 import sqlite3
@@ -22,6 +23,9 @@ from pathlib import Path
 from typing import Any
 
 from .events import configure_connection, iso, parse_utc, utcnow
+
+
+logger = logging.getLogger(__name__)
 
 
 RULE_OUTCOMES = {
@@ -363,7 +367,8 @@ class NotificationRepository:
         return [{"id":r["id"],"channel":r["channel"],"destination":r["destination"],"status":r["status"],
                  "attempts":r["attempts"],"outcome":r["outcome"],"cameraName":r["camera_name"],
                  "identityName":r["identity_name"],"occurredAt":r["occurred_at"],"isTest":bool(r["is_test"]),
-                 "lastError":r["last_error"],"createdAt":r["created_at"]} for r in rows]
+                 "providerMessageId":r["provider_message_id"],"lastError":r["last_error"],
+                 "createdAt":r["created_at"],"updatedAt":r["updated_at"]} for r in rows]
 
     def screenshot(self, screenshot_id: int | None):
         if not screenshot_id: return None
@@ -392,8 +397,16 @@ class NotificationWorker:
             if not row: self._stop.wait(self.poll_seconds); continue
             try:
                 message_id = self._send(row); self.repository.sent(row["id"], message_id)
+                logger.info(
+                    "Notification accepted by provider delivery_id=%s channel=%s message_id=%s",
+                    row["id"], row["channel"], message_id or "unavailable",
+                )
             except Exception as exc:
                 self.repository.failed(row, exc, isinstance(exc, PermanentDeliveryError), self.max_attempts)
+                logger.warning(
+                    "Notification delivery failed delivery_id=%s channel=%s attempt=%s error=%s",
+                    row["id"], row["channel"], row["attempts"], exc,
+                )
 
     def _body(self, row):
         title = "VerifEye test notification" if row["is_test"] else f"VerifEye: {row['outcome'].replace('_',' ')}"
@@ -407,7 +420,9 @@ class NotificationWorker:
         if row["channel"] == "email":
             if not self.providers.email_ready: raise PermanentDeliveryError("SMTP provider is not configured.")
             message = EmailMessage(); message["Subject"] = title; message["From"] = self.providers.smtp_sender
-            message["To"] = row["destination"]; message.set_content(body)
+            message["To"] = row["destination"]
+            message["Message-ID"] = make_msgid(domain=self.providers.smtp_sender.rsplit("@", 1)[-1])
+            message.set_content(body)
             cid, image_html = None, ""
             shot = self.repository.screenshot(row["screenshot_id"])
             image = self.screenshot_root / shot["relative_path"] if shot else None
@@ -419,9 +434,14 @@ class NotificationWorker:
             if self.providers.smtp_tls_mode == "ssl": server = smtplib.SMTP_SSL(self.providers.smtp_host, self.providers.smtp_port, timeout=15, context=context)
             else: server = smtplib.SMTP(self.providers.smtp_host, self.providers.smtp_port, timeout=15)
             with server:
-                if self.providers.smtp_tls_mode == "starttls": server.starttls(context=context)
+                server.ehlo()
+                if self.providers.smtp_tls_mode == "starttls":
+                    server.starttls(context=context); server.ehlo()
                 if self.providers.smtp_username: server.login(self.providers.smtp_username, self.providers.smtp_password)
-                server.send_message(message)
+                refused = server.send_message(message)
+                if refused:
+                    detail = ", ".join(f"{address}: {response!r}" for address, response in refused.items())
+                    raise PermanentDeliveryError(f"SMTP rejected recipient(s): {detail}")
             return message["Message-ID"]
         if not self.providers.sms_ready: raise PermanentDeliveryError("Twilio provider is not configured.")
         url = f"https://api.twilio.com/2010-04-01/Accounts/{urllib.parse.quote(self.providers.twilio_account_sid)}/Messages.json"
