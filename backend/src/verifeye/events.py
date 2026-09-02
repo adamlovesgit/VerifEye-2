@@ -353,8 +353,9 @@ class EventRepository:
                     connection.execute(
                         """INSERT INTO screenshots(
                                result_id, role, relative_path, media_type, byte_size, sha256, created_at
-                           ) VALUES (?, 'face_crop', ?, ?, ?, ?, ?)""",
-                        (int(cursor.lastrowid), screenshot["relative_path"], screenshot["media_type"],
+                           ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (int(cursor.lastrowid), screenshot.get("role", "face_crop"),
+                         screenshot["relative_path"], screenshot["media_type"],
                          screenshot["byte_size"], screenshot["sha256"], now),
                     )
 
@@ -649,8 +650,10 @@ class RecognitionPersistenceSink:
             if self.screenshot_storage:
                 for item in results:
                     image = item.pop("image_bytes", None)
+                    image_role = item.pop("image_role", "face_crop")
                     if image:
                         path, record = self.screenshot_storage.stage(image, "image/jpeg", generated=True)
+                        record["role"] = image_role
                         finalized.append(path); item["screenshot"] = record
             self.repository.add_results(session_id, results)
         except Exception:

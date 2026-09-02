@@ -258,15 +258,20 @@ class InferenceSession:
         faces = self.frame_processor(record.frame.copy(), self.detector, self.engine,
                                      {"detector": {"min_conf": .5, "pad_ratio": .15}})
         captured, results = datetime.fromtimestamp(record.captured_at, UTC).isoformat(), []
+        if not faces:
+            return results
+        frame_ok, frame_jpeg = cv2.imencode(
+            ".jpg", record.frame, [cv2.IMWRITE_JPEG_QUALITY, 90]
+        )
+        frame_bytes = frame_jpeg.tobytes() if frame_ok else None
         for face in faces:
             label = self.matcher.match(face.embedding)
-            crop_ok, crop = cv2.imencode(".jpg", face.aligned_rgb[..., ::-1], [cv2.IMWRITE_JPEG_QUALITY, 90])
             results.append({"capture_timestamp": captured, "frame_sequence": record.sequence,
                 "source_role": record.source_role,
                 "outcome": "recognized" if label.identity_id is not None else "unrecognized_face",
                 "identity_id": label.identity_id, "similarity": label.similarity,
                 "detection_confidence": float(face.score), "displayed_label": label.display_name,
-                "image_bytes": crop.tobytes() if crop_ok else None})
+                "image_bytes": frame_bytes, "image_role": "annotated_context"})
         return results
     def close(self):
         try: self.detector.close()

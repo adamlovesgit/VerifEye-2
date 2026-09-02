@@ -9,7 +9,9 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from verifeye.events import EventRepository, iso, utcnow
+from verifeye.events import (
+    EventRepository, RecognitionPersistenceSink, ScreenshotStorage, iso, utcnow,
+)
 
 
 class EventRepositoryTests(unittest.TestCase):
@@ -131,6 +133,39 @@ class EventRepositoryTests(unittest.TestCase):
         detail = self.repository.get_event(event.id)
         self.assertEqual(detail["screenshots"][0]["role"], "face_crop")
         self.assertIsNotNone(detail["screenshots"][0]["result_id"])
+
+    def test_result_screenshot_persists_explicit_context_role(self):
+        event = self.accept("context")
+        session_id, _ = self.repository.attach_event(event.id, 5, 10, 60)
+        self.repository.add_results(session_id, [{
+            "capture_timestamp": iso(utcnow()), "outcome": "recognized",
+            "identity_id": None, "displayed_label": "Person",
+            "screenshot": {
+                "role": "annotated_context", "relative_path": "generated/context.jpg",
+                "media_type": "image/jpeg", "byte_size": 4, "sha256": "hash",
+            },
+        }])
+
+        detail = self.repository.get_event(event.id)
+
+        self.assertEqual(detail["screenshots"][0]["role"], "annotated_context")
+
+    def test_persistence_sink_propagates_image_role_to_screenshot(self):
+        event = self.accept("sink-context")
+        session_id, _ = self.repository.attach_event(event.id, 5, 10, 60)
+        storage = ScreenshotStorage(Path(self.temp.name) / "screenshots")
+        sink = RecognitionPersistenceSink(self.repository, storage)
+
+        sink.results(session_id, [{
+            "capture_timestamp": iso(utcnow()), "outcome": "unrecognized_face",
+            "displayed_label": "Unknown", "image_bytes": b"full-frame-jpeg",
+            "image_role": "annotated_context",
+        }])
+
+        detail = self.repository.get_event(event.id)
+        self.assertEqual(detail["screenshots"][0]["role"], "annotated_context")
+        stored = self.repository.screenshot(detail["screenshots"][0]["id"])
+        self.assertEqual(storage.resolve(stored["relative_path"]).read_bytes(), b"full-frame-jpeg")
 
     def test_motion_retention_keeps_recognized_and_prunes_by_outcome(self):
         def completed(source, outcome, age_days):

@@ -7,7 +7,9 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
+import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -15,7 +17,7 @@ sys.modules.setdefault("mediapipe", SimpleNamespace())
 
 from verifeye.cameras.models import Camera
 from verifeye.cameras.runtime import (
-    FrameRecord, PreRollBuffer, PreRollCapture, RecognitionCapture, RecognitionSessionManager,
+    FrameRecord, InferenceSession, PreRollBuffer, PreRollCapture, RecognitionCapture, RecognitionSessionManager,
     _RecognitionRuntime,
 )
 
@@ -144,6 +146,59 @@ class RecognitionCaptureTests(unittest.TestCase):
         self.assertFalse(capture._thread.is_alive())
         self.assertEqual(len(source.close_threads), 1)
         self.assertNotEqual(source.close_threads[0], caller)
+
+
+class InferenceSessionTests(unittest.TestCase):
+    def test_no_face_skips_full_frame_encoding(self):
+        frame = np.zeros((18, 32, 3), dtype=np.uint8)
+        session = InferenceSession(
+            object(), SimpleNamespace(), SimpleNamespace(close=lambda: None),
+            lambda *_args: [],
+        )
+        record = FrameRecord(1, 4, 1, 1_700_000_000, 20.0, "lightweight", frame)
+
+        with patch("verifeye.cameras.runtime.cv2.imencode") as encode:
+            results = session.process(record)
+
+        self.assertEqual(results, [])
+        encode.assert_not_called()
+
+    def test_result_screenshot_retains_full_camera_frame(self):
+        frame = np.zeros((18, 32, 3), dtype=np.uint8)
+        frame[:, :16] = (12, 70, 210)
+        frame[:, 16:] = (190, 35, 20)
+        face = SimpleNamespace(
+            embedding=np.array([1.0, 0.0], dtype=np.float32),
+            aligned_rgb=np.full((112, 112, 3), 255, dtype=np.uint8),
+            score=.91,
+        )
+        processed_frames = []
+        def process(value, *_args):
+            processed_frames.append(value)
+            return [face]
+        label = SimpleNamespace(
+            display_name="Ada", similarity=.88, identity_id=7,
+        )
+        matcher = SimpleNamespace(match=lambda embedding: label)
+        session = InferenceSession(object(), matcher, SimpleNamespace(close=lambda: None), process)
+        record = FrameRecord(1, 4, 1, 1_700_000_000, 20.0, "lightweight", frame)
+
+        results = session.process(record)
+
+        self.assertEqual(len(results), 1)
+        result = results[0]
+        decoded = cv2.imdecode(np.frombuffer(result["image_bytes"], np.uint8), cv2.IMREAD_COLOR)
+        self.assertEqual(decoded.shape, frame.shape)
+        self.assertLess(float(decoded[:, :16, 0].mean()), 40)
+        self.assertGreater(float(decoded[:, :16, 2].mean()), 180)
+        self.assertGreater(float(decoded[:, 16:, 0].mean()), 160)
+        self.assertLess(float(decoded[:, 16:, 2].mean()), 45)
+        self.assertEqual(result["image_role"], "annotated_context")
+        self.assertEqual(result["outcome"], "recognized")
+        self.assertEqual(result["identity_id"], 7)
+        self.assertEqual(result["displayed_label"], "Ada")
+        self.assertTrue(np.array_equal(processed_frames[0], frame))
+        self.assertIsNot(processed_frames[0], frame)
 
 
 class FakePreRoll:
