@@ -757,10 +757,10 @@ $("#cancel-notification-rule").addEventListener("click",()=>$("#new-notification
 $("#create-notification-rule").addEventListener("click",async event=>{
   const target=$("#new-rule-target").value;if(!target)return;
   const isIdentity=target.startsWith("identity:"),ruleType=isIdentity?"identity":target,identityId=isIdentity?Number(target.split(":")[1]):null;
-  event.currentTarget.disabled=true;$("#notification-error").textContent="";
+  const button=event.currentTarget;button.disabled=true;$("#notification-error").textContent="";
   try{await api("/api/notification-rules",{method:"POST",body:JSON.stringify({identityId,ruleType,emailAddress:"",phoneNumber:"",emailEnabled:false,smsEnabled:false,cameraIds:[]})});$("#new-notification-rule").classList.add("hidden");await loadNotifications();}
   catch(error){$("#notification-error").textContent=error.message;}
-  finally{event.currentTarget.disabled=false;}
+  finally{button.disabled=false;}
 });
 
 async function loadNotificationDeliveries(){
