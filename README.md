@@ -103,6 +103,50 @@ Then open `http://127.0.0.1:8000`. The recognition model defaults to
 `~/.insightface/models/buffalo_l/w600k_r50.onnx`. Set
 `VERIFEYE_MODEL_PATH` before starting the server if it is stored elsewhere.
 
+## Remote web access
+
+VerifEye can be securely reached from a phone outside the home network as a
+normal, authenticated web page. This is a web deployment, not a mobile app:
+an alert email links to the public site and the recipient signs in with their
+existing VerifEye account. Alert links contain only the event ID; they never
+contain a session, preview grant, password, or other login credential.
+
+Use a public DNS name and HTTPS reverse proxy. Keep Uvicorn, MediaMTX's Control
+API, and RTSP listeners on loopback. The only additional media exposure is the
+explicit WebRTC UDP port required for the live preview. The included
+[`deploy/Caddyfile.example`](deploy/Caddyfile.example) forwards the web app and
+WHEP endpoint through one HTTPS origin. Bind Uvicorn locally in production:
+
+```powershell
+$env:PYTHONPATH = "backend/src"
+python -m uvicorn verifeye.app:app --host 127.0.0.1 --port 8000
+```
+
+Configure the same exact public hostname everywhere (replace the examples):
+
+```powershell
+$env:VERIFEYE_PUBLIC_BASE_URL = "https://view.example.com"
+$env:VERIFEYE_PUBLIC_WHEP_URL = "https://view.example.com/media"
+$env:VERIFEYE_MEDIAMTX_WEBRTC_ADDITIONAL_HOST = "view.example.com"
+$env:VERIFEYE_MEDIAMTX_WEBRTC_UDP_ADDRESS = "0.0.0.0:8189"
+```
+
+`VERIFEYE_PUBLIC_BASE_URL` supplies the alert link. `VERIFEYE_PUBLIC_WHEP_URL`
+is the browser-facing WHEP URL; it is deliberately separate from
+`VERIFEYE_MEDIAMTX_WHEP_URL`, which remains the loopback MediaMTX listener
+(default `http://127.0.0.1:8889`). Startup rejects a mismatched public WHEP or
+advertised WebRTC host, and MediaMTX accepts WHEP CORS requests only from that
+one public origin.
+
+Open/forward TCP 443 to the reverse proxy and UDP 8189 directly to this host
+(or the corresponding explicit UDP port if changed). Do **not** forward 8000,
+8554, 8889, or 9997. A reverse proxy alone cannot carry WebRTC media; the UDP
+port is necessary for browser ICE. If the host is behind NAT, ensure the DNS
+name resolves externally to the forwarded address and test from cellular data.
+Use a firewall rule limited to the chosen UDP port, keep the host patched, and
+protect the public DNS name with a valid certificate. If NAT or carrier policy
+blocks UDP, provide a TURN service before treating remote video as reliable.
+
 Uploaded enrollment photos stay under `backend/data/enrollments`; the image
 and its normalized embedding are never sent to a cloud service. Cameras,
 identities, events, recognition results, and notification settings belong to

@@ -1,0 +1,20 @@
+# Replace view.example.com with the DNS name in VERIFEYE_PUBLIC_BASE_URL.
+# Run Uvicorn on 127.0.0.1:8000 and leave MediaMTX's HTTP listener on
+# 127.0.0.1:8889. Caddy terminates public TLS and forwards the WHEP requests.
+view.example.com {
+    encode zstd gzip
+
+    # VERIFEYE_PUBLIC_WHEP_URL=https://view.example.com/media
+    # handle_path removes /media before passing the WHEP path to MediaMTX.
+    # MediaMTX returns an absolute-path Location for each WHEP session. Rewrite
+    # it back through /media so the reader's PATCH and DELETE remain proxied.
+    handle_path /media/* {
+        reverse_proxy 127.0.0.1:8889 {
+            header_down Location ^/(.*)$ /media/$1
+        }
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:8000
+    }
+}
