@@ -29,8 +29,8 @@ class PullPoint:
     def __init__(self): self.calls = 0; self.stop = None
     def PullMessages(self, request):
         self.calls += 1
-        if self.stop: self.stop.set()
-        return {"NotificationMessage": [notification()]}
+        if self.stop and self.calls > 1: self.stop.set()
+        return {"NotificationMessage": [notification()] if self.calls == 1 else []}
 
 
 class Gateway:
@@ -112,6 +112,15 @@ class OnvifEventTests(unittest.TestCase):
         worker._handle_notification(notification("false"))
         worker._handle_notification(notification("true"))
         self.assertEqual(len(calls), 2)
+
+    def test_stopped_worker_discards_motion_notification(self):
+        calls = []
+        worker = OnvifEventWorker(SimpleNamespace(id=1), SimpleNamespace(
+            accept_event=lambda *args: calls.append(args)
+        ), Gateway())
+        worker._stop.set()
+        worker._handle_notification(notification())
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__": unittest.main()

@@ -63,8 +63,13 @@ class CameraService:
     def delete(self, camera_id):
         if self.onvif_events: self.onvif_events.stop(camera_id)
         self.manager.delete(camera_id)
-    def start(self, camera_id): return self.manager.start(camera_id)
-    def stop(self, camera_id): return self.manager.stop(camera_id)
+    def start(self, camera_id):
+        status = self.manager.start(camera_id)
+        if self.onvif_events: self.onvif_events.start(camera_id)
+        return status
+    def stop(self, camera_id):
+        if self.onvif_events: self.onvif_events.stop(camera_id)
+        return self.manager.stop(camera_id)
 
 
 class OnvifGateway:

@@ -153,5 +153,25 @@ class CameraServiceOnvifLifecycleTests(unittest.TestCase):
         self.assertTrue(manager.running)
         self.assertEqual(events.started, [1])
 
+    def test_stopping_and_starting_stream_pauses_and_resumes_onvif_events(self):
+        class Repository:
+            camera = Camera(1, "Door", "rtsp://host/live", "host", "onvif", True, None,
+                            "http://host/onvif/device_service", "admin", "secret")
+            def get(self, _camera_id): return self.camera
+        class Manager:
+            def start(self, _camera_id): return "started"
+            def stop(self, _camera_id): return "stopped"
+        class Events:
+            def __init__(self): self.started = []; self.stopped = []
+            def start(self, camera_id): self.started.append(camera_id)
+            def stop(self, camera_id): self.stopped.append(camera_id)
+
+        events = Events()
+        service = CameraService(Repository(), Manager(), events)
+        self.assertEqual(service.stop(1), "stopped")
+        self.assertEqual(events.stopped, [1])
+        self.assertEqual(service.start(1), "started")
+        self.assertEqual(events.started, [1])
+
 
 if __name__ == "__main__": unittest.main()

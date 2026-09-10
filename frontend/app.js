@@ -365,7 +365,7 @@ async function loadCameras() {
         await api(`/api/cameras/${camera.id}`, {method:"PATCH", body:JSON.stringify(change)}); loadCameras();
       };
       const toggle = card.querySelector(".toggle");
-      toggle.textContent = camera.running ? "Turn off stream" : "Start stream";
+      toggle.textContent = camera.running ? "Turn off camera" : "Start camera";
       const setStreamRunning = async running => {
         toggle.disabled = true;
         try {

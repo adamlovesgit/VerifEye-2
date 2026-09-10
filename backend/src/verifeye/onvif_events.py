@@ -132,6 +132,7 @@ class OnvifEventWorker:
         self.cooldown_seconds, self.clock = cooldown_seconds, clock
         self._active_sources, self._last_trigger_at = set(), {}
         self._stop = threading.Event()
+        self._ingest_lock = threading.Lock()
         self._thread = None
 
     def start(self):
@@ -139,19 +140,21 @@ class OnvifEventWorker:
         self._thread.start()
 
     def _handle_notification(self, notification):
-        parsed = parse_motion_notification(notification)
-        if parsed is None: return
-        active, occurred, metadata, event_id, source_id = parsed
-        if not active:
-            self._active_sources.discard(source_id)
-            return
-        if source_id in self._active_sources: return
-        self._active_sources.add(source_id)
-        now = self.clock()
-        if now - self._last_trigger_at.get(source_id, float("-inf")) < self.cooldown_seconds:
-            return
-        self._last_trigger_at[source_id] = now
-        self.repository.accept_event(self.camera.id, event_id, "onvif_motion", occurred, metadata)
+        with self._ingest_lock:
+            if self._stop.is_set(): return
+            parsed = parse_motion_notification(notification)
+            if parsed is None: return
+            active, occurred, metadata, event_id, source_id = parsed
+            if not active:
+                self._active_sources.discard(source_id)
+                return
+            if source_id in self._active_sources: return
+            self._active_sources.add(source_id)
+            now = self.clock()
+            if now - self._last_trigger_at.get(source_id, float("-inf")) < self.cooldown_seconds:
+                return
+            self._last_trigger_at[source_id] = now
+            self.repository.accept_event(self.camera.id, event_id, "onvif_motion", occurred, metadata)
 
     def _run(self):
         while not self._stop.is_set():
@@ -160,11 +163,13 @@ class OnvifEventWorker:
                                                    self.camera.onvif_password)
                 while not self._stop.is_set():
                     response = pullpoint.PullMessages({"Timeout": self.pull_timeout, "MessageLimit": self.message_limit})
+                    if self._stop.is_set(): return
                     notifications = getattr(response, "NotificationMessage", None)
                     if notifications is None:
                         serialized = _serialized(response)
                         notifications = serialized.get("NotificationMessage", []) if isinstance(serialized, dict) else []
                     for notification in notifications or []:
+                        if self._stop.is_set(): return
                         self._handle_notification(notification)
             except Exception as exc:
                 if self._stop.is_set(): return
@@ -174,6 +179,7 @@ class OnvifEventWorker:
 
     def stop(self, timeout=6):
         self._stop.set()
+        with self._ingest_lock: pass
         if self._thread: self._thread.join(timeout)
 
 
