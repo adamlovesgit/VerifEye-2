@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
-from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -48,17 +47,11 @@ class Settings:
     mediamtx_api_url: str = "http://127.0.0.1:9997"
     mediamtx_rtsp_url: str = "rtsp://127.0.0.1:8554"
     mediamtx_whep_url: str = "http://127.0.0.1:8889"
-    public_whep_url: str = "http://127.0.0.1:8889"
-    mediamtx_webrtc_udp_address: str = "127.0.0.1:8189"
-    mediamtx_webrtc_additional_host: str = "127.0.0.1"
     mediamtx_runtime_dir: Path | None = None
 
     @classmethod
     def from_environment(cls) -> "Settings":
         backend = Path(__file__).resolve().parents[2]
-        public_base_url = os.getenv("VERIFEYE_PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
-        whep_listener_url = os.getenv("VERIFEYE_MEDIAMTX_WHEP_URL", "http://127.0.0.1:8889").rstrip("/")
-        public_host = urlsplit(public_base_url).hostname or ""
         return cls(
             database=Path(os.getenv("VERIFEYE_DATABASE", backend / "data" / "verifeye.db")),
             upload_dir=Path(os.getenv("VERIFEYE_UPLOAD_DIR", backend / "data" / "enrollments")),
@@ -94,13 +87,10 @@ class Settings:
             twilio_account_sid=os.getenv("VERIFEYE_TWILIO_ACCOUNT_SID", ""),
             twilio_auth_token=os.getenv("VERIFEYE_TWILIO_AUTH_TOKEN", ""),
             twilio_from_number=os.getenv("VERIFEYE_TWILIO_FROM_NUMBER", ""),
-            public_base_url=public_base_url,
+            public_base_url=os.getenv("VERIFEYE_PUBLIC_BASE_URL", "http://127.0.0.1:8000"),
             mediamtx_api_url=os.getenv("VERIFEYE_MEDIAMTX_API_URL", "http://127.0.0.1:9997").rstrip("/"),
             mediamtx_rtsp_url=os.getenv("VERIFEYE_MEDIAMTX_RTSP_URL", "rtsp://127.0.0.1:8554").rstrip("/"),
-            mediamtx_whep_url=whep_listener_url,
-            public_whep_url=os.getenv("VERIFEYE_PUBLIC_WHEP_URL", whep_listener_url).rstrip("/"),
-            mediamtx_webrtc_udp_address=os.getenv("VERIFEYE_MEDIAMTX_WEBRTC_UDP_ADDRESS", "127.0.0.1:8189"),
-            mediamtx_webrtc_additional_host=os.getenv("VERIFEYE_MEDIAMTX_WEBRTC_ADDITIONAL_HOST", public_host),
+            mediamtx_whep_url=os.getenv("VERIFEYE_MEDIAMTX_WHEP_URL", "http://127.0.0.1:8889").rstrip("/"),
             mediamtx_runtime_dir=Path(os.getenv("VERIFEYE_MEDIAMTX_RUNTIME_DIR", backend / "data" / "media-router")),
         )
 
@@ -125,36 +115,3 @@ class Settings:
             raise ValueError("SQLite busy timeout must not be negative.")
         if not 1 <= self.smtp_port <= 65535 or self.smtp_tls_mode not in {"starttls", "ssl", "none"}:
             raise ValueError("SMTP port or TLS mode is invalid.")
-        public = urlsplit(self.public_base_url)
-        whep = urlsplit(self.public_whep_url)
-        if (public.scheme not in {"http", "https"} or not public.hostname or public.username or public.password
-                or public.query or public.fragment or public.path not in {"", "/"}):
-            raise ValueError("VERIFEYE_PUBLIC_BASE_URL must be an absolute HTTP(S) origin without credentials, path, query, or fragment.")
-        if (whep.scheme not in {"http", "https"} or not whep.hostname or whep.username or whep.password
-                or whep.query or whep.fragment):
-            raise ValueError("VERIFEYE_PUBLIC_WHEP_URL must be an absolute HTTP(S) URL without credentials, query, or fragment.")
-        loopback_hosts = {"127.0.0.1", "localhost", "::1"}
-        if public.hostname not in loopback_hosts and public.scheme != "https":
-            raise ValueError("VERIFEYE_PUBLIC_BASE_URL must use HTTPS outside loopback development.")
-        if whep.hostname not in loopback_hosts and whep.scheme != "https":
-            raise ValueError("VERIFEYE_PUBLIC_WHEP_URL must use HTTPS outside loopback development.")
-        if whep.hostname.lower() != public.hostname.lower():
-            raise ValueError("VERIFEYE_PUBLIC_WHEP_URL must use the same public host as VERIFEYE_PUBLIC_BASE_URL.")
-        if self.mediamtx_webrtc_additional_host.lower() != public.hostname.lower():
-            raise ValueError("VERIFEYE_MEDIAMTX_WEBRTC_ADDITIONAL_HOST must exactly match the public URL host.")
-        udp = urlsplit("udp://" + self.mediamtx_webrtc_udp_address)
-        if not udp.hostname or udp.port is None or udp.path not in {"", "/"}:
-            raise ValueError("VERIFEYE_MEDIAMTX_WEBRTC_UDP_ADDRESS must be an address and port, for example 0.0.0.0:8189.")
-
-    @property
-    def webrtc_allowed_origins(self) -> tuple[str, ...]:
-        """Permit both conventional loopback names only for local development."""
-        public = urlsplit(self.public_base_url)
-        if public.hostname not in {"127.0.0.1", "localhost", "::1"}:
-            return (f"{public.scheme}://{public.netloc}",)
-        port = f":{public.port}" if public.port is not None else ""
-        origins = [f"{public.scheme}://127.0.0.1{port}", f"{public.scheme}://localhost{port}"]
-        exact = f"{public.scheme}://{public.netloc}"
-        if exact not in origins:
-            origins.append(exact)
-        return tuple(origins)

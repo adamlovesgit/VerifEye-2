@@ -79,26 +79,6 @@ class MediaProcessFailureTests(unittest.TestCase):
             MediaMTXProcess(Path(folder), Path(folder) / "runtime",
                             MediaMTXClient("http://0.0.0.0:9997"))
 
-    def test_config_uses_one_exact_public_origin_and_advertised_host(self):
-        with tempfile.TemporaryDirectory() as folder:
-            process = MediaMTXProcess(
-                Path(folder), Path(folder) / "runtime", MediaMTXClient("http://127.0.0.1:9997"),
-                allowed_origins=("https://view.example.test",), webrtc_udp_address="0.0.0.0:8189",
-                webrtc_additional_host="view.example.test",
-            )
-            config = process._config().read_text(encoding="utf-8")
-        self.assertIn('webrtcAllowOrigins: ["https://view.example.test"]', config)
-        self.assertIn('webrtcLocalUDPAddress: "0.0.0.0:8189"', config)
-        self.assertIn('webrtcAdditionalHosts: ["view.example.test"]', config)
-        self.assertNotIn("localhost:8000", config)
-
-    def test_default_config_keeps_both_local_development_origins(self):
-        with tempfile.TemporaryDirectory() as folder:
-            process = MediaMTXProcess(Path(folder), Path(folder) / "runtime",
-                                      MediaMTXClient("http://127.0.0.1:9997"))
-            config = process._config().read_text(encoding="utf-8")
-        self.assertIn('webrtcAllowOrigins: ["http://127.0.0.1:8000", "http://localhost:8000"]', config)
-
     def test_initial_failure_is_fatal_but_restart_failures_are_retried(self):
         with tempfile.TemporaryDirectory() as folder:
             process = MediaMTXProcess(Path(folder), Path(folder) / "runtime",
@@ -146,12 +126,6 @@ class MediaSourceTests(unittest.TestCase):
         self.assertEqual(set(control.paths), {"verifeye-camera-7-preview"})
         self.assertTrue(preview.url.endswith("/verifeye-camera-7-preview/whep"))
         self.assertTrue(preroll.url.endswith("/verifeye-camera-7-preview"))
-
-    def test_preview_url_can_be_an_external_reverse_proxy_url(self):
-        source = MediaMTXSource(FakeControl(), SimpleNamespace(healthy=True),
-                                "rtsp://127.0.0.1:8554", "https://view.example.test/media")
-        self.assertEqual(source.preview_url(7).url,
-                         "https://view.example.test/media/verifeye-camera-7-preview/whep")
 
     def test_distinct_recognition_stream_gets_only_one_optional_path(self):
         control = FakeControl(); source = MediaMTXSource(control, SimpleNamespace(healthy=True), "rtsp://router", "http://router")

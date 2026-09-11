@@ -176,15 +176,10 @@ class MediaMTXProcess:
 
     def __init__(self, vendor_dir: Path, runtime_dir: Path, client: MediaMTXClient,
                  rtsp_url="rtsp://127.0.0.1:8554", whep_url="http://127.0.0.1:8889",
-                 auth_url="http://127.0.0.1:8000/internal/media-auth",
-                 allowed_origins=("http://127.0.0.1:8000", "http://localhost:8000"),
-                 webrtc_udp_address="127.0.0.1:8189", webrtc_additional_host="127.0.0.1", clock=time.monotonic,
+                 auth_url="http://127.0.0.1:8000/internal/media-auth", clock=time.monotonic,
                  restart_delay=lambda attempt: min(30.0, 2 ** min(attempt, 5))):
         self.vendor_dir, self.runtime_dir, self.client = Path(vendor_dir), Path(runtime_dir), client
         self.auth_url, self.clock = auth_url, clock
-        self.allowed_origins = tuple(origin.rstrip("/") for origin in allowed_origins)
-        self.webrtc_udp_address = webrtc_udp_address
-        self.webrtc_additional_host = webrtc_additional_host
         self.restart_delay = restart_delay
         self.api_address = self._loopback_address(client.base_url, {"http", "https"})
         self.rtsp_address = self._loopback_address(rtsp_url, {"rtsp", "rtsps"})
@@ -256,7 +251,6 @@ class MediaMTXProcess:
         return executable
 
     def _config(self):
-        self.runtime_dir.mkdir(parents=True, exist_ok=True)
         path = self.runtime_dir / "mediamtx.yml"
         path.write_text(
             "\n".join([
@@ -267,10 +261,9 @@ class MediaMTXProcess:
                 "playback: false", "rtsp: true", f'rtspAddress: "{self.rtsp_address}"',
                 'rtspEncryption: "no"', "rtspTransports: [tcp]", "rtmp: false", "hls: false",
                 "webrtc: true", f'webrtcAddress: "{self.whep_address}"', "webrtcEncryption: false",
-                f"webrtcAllowOrigins: {json.dumps(self.allowed_origins)}",
-                f"webrtcLocalUDPAddress: {json.dumps(self.webrtc_udp_address)}", 'webrtcLocalTCPAddress: ""',
-                "webrtcIPsFromInterfaces: false",
-                f"webrtcAdditionalHosts: [{json.dumps(self.webrtc_additional_host)}]",
+                'webrtcAllowOrigins: ["http://127.0.0.1:8000", "http://localhost:8000"]',
+                'webrtcLocalUDPAddress: "127.0.0.1:8189"', 'webrtcLocalTCPAddress: ""',
+                "webrtcIPsFromInterfaces: false", 'webrtcAdditionalHosts: ["127.0.0.1"]',
                 "srt: false", "moq: false", "pathDefaults:", "  source: publisher",
                 "  sourceOnDemand: true", "  sourceOnDemandStartTimeout: 10s",
                 "  sourceOnDemandCloseAfter: 1s", "  record: false", "paths: {}", "",

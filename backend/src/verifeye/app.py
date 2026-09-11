@@ -220,11 +220,8 @@ async def lifespan(application: FastAPI):
         PROJECT_DIR / "backend" / "vendor" / "mediamtx" / "1.19.3",
         settings.mediamtx_runtime_dir, media_client,
         settings.mediamtx_rtsp_url, settings.mediamtx_whep_url,
-        allowed_origins=settings.webrtc_allowed_origins,
-        webrtc_udp_address=settings.mediamtx_webrtc_udp_address,
-        webrtc_additional_host=settings.mediamtx_webrtc_additional_host,
     )
-    media = MediaMTXSource(media_client, media_process, settings.mediamtx_rtsp_url, settings.public_whep_url)
+    media = MediaMTXSource(media_client, media_process, settings.mediamtx_rtsp_url, settings.mediamtx_whep_url)
     engine = RecognitionEngine(settings.model_path)
     matcher = IdentityMatcher(settings.database, settings.similarity_threshold)
     manager = CameraManager(
