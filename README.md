@@ -109,6 +109,12 @@ identities, events, recognition results, and notification settings belong to
 the installation. Only the administrator can read or change this data; guests
 receive a non-secret camera list and short-lived preview grants.
 
+The backend caps the complete multipart request envelope for enrollment and
+camera-event uploads at 11 MiB (a 10 MiB image plus 1 MiB of form overhead).
+When deploying behind a reverse proxy, configure an equivalent request-body
+limit there as well so oversized uploads are rejected before they reach the
+application.
+
 If the administrator password is lost, stop VerifEye and run the offline
 recovery command from the project root. Back up the database first. The command
 changes only the administrator password and revokes all administrator sessions:

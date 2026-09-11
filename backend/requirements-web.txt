@@ -1,7 +1,7 @@
 -r requirements-vision.txt
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
-python-multipart==0.0.20
+python-multipart==0.0.32
 cryptography==45.0.5
 av==15.0.0; python_version < "3.14"
 av==15.1.0; python_version >= "3.14"

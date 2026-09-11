@@ -35,6 +35,7 @@ from .onvif_events import OnvifEventManager
 from .recognition import IdentityMatcher, RecognitionEngine
 from .notifications import NotificationError, NotificationProviderStore, NotificationRepository, NotificationWorker, ProviderSettings
 from .request_diagnostics import RequestDiagnostics
+from .request_limits import UploadRequestBodyLimitMiddleware
 from .storage import EmbeddingStore
 
 
@@ -307,6 +308,10 @@ async def diagnose_requests_and_disable_frontend_cache(request, call_next):
         request_diagnostics.finish(diagnostic, timer, None, failed=True)
         raise
 
+
+# This is deliberately outside FastAPI's multipart parser so bodies cannot spool
+# to disk before authorization and per-file validation run.
+app.add_middleware(UploadRequestBodyLimitMiddleware, max_bytes=MAX_UPLOAD_BYTES + 1024 * 1024)
 
 
 @app.exception_handler(CameraError)
