@@ -205,7 +205,7 @@ CREATE INDEX IF NOT EXISTS ix_camera_event_tokens_camera
 
 CREATE TABLE IF NOT EXISTS notification_rules (
     id INTEGER PRIMARY KEY,
-    identity_id INTEGER UNIQUE REFERENCES identities(id) ON DELETE CASCADE,
+    identity_id INTEGER REFERENCES identities(id) ON DELETE CASCADE,
     rule_type TEXT NOT NULL
         CHECK (rule_type IN ('identity', 'unknown_face', 'no_face', 'system_error')),
     email_address TEXT,
@@ -220,9 +220,6 @@ CREATE TABLE IF NOT EXISTS notification_rules (
         (rule_type <> 'identity' AND identity_id IS NULL)
     )
 );
-
-CREATE UNIQUE INDEX IF NOT EXISTS ux_notification_rules_session_type
-    ON notification_rules(rule_type) WHERE rule_type <> 'identity';
 
 CREATE TABLE IF NOT EXISTS notification_rule_cameras (
     rule_id INTEGER NOT NULL REFERENCES notification_rules(id) ON DELETE CASCADE,

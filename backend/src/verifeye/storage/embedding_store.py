@@ -60,6 +60,7 @@ class EmbeddingStore:
         self._connection.execute("PRAGMA busy_timeout = 5000")
         self._connection.execute("PRAGMA journal_mode = WAL")
         self._migrate_auth_roles()
+        self._migrate_notification_rule_uniqueness()
         schema = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
         self._connection.executescript(schema)
 
@@ -83,6 +84,58 @@ class EmbeddingStore:
                 """ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'
                    CHECK (role IN ('admin', 'guest'))"""
             )
+
+    def _migrate_notification_rule_uniqueness(self) -> None:
+        """Allow multiple rules for the same identity or session-level outcome."""
+        table_exists = self._connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='notification_rules'"
+        ).fetchone()
+        if not table_exists:
+            return
+        indexes = self._connection.execute("PRAGMA index_list(notification_rules)").fetchall()
+        identity_is_unique = any(
+            index[2] and [column[2] for column in self._connection.execute(
+                f"PRAGMA index_info({index[1]})"
+            )] == ["identity_id"]
+            for index in indexes
+        )
+        session_type_index = any(index[1] == "ux_notification_rules_session_type" for index in indexes)
+        if not identity_is_unique and not session_type_index:
+            return
+        self._connection.execute("PRAGMA foreign_keys = OFF")
+        try:
+            with self._connection:
+                self._connection.execute("DROP INDEX IF EXISTS ux_notification_rules_session_type")
+                if identity_is_unique:
+                    self._connection.execute(
+                        """CREATE TABLE notification_rules_replacement (
+                               id INTEGER PRIMARY KEY,
+                               identity_id INTEGER REFERENCES identities(id) ON DELETE CASCADE,
+                               rule_type TEXT NOT NULL CHECK (rule_type IN
+                                   ('identity', 'unknown_face', 'no_face', 'system_error')),
+                               email_address TEXT,
+                               phone_number TEXT,
+                               email_enabled INTEGER NOT NULL DEFAULT 0,
+                               sms_enabled INTEGER NOT NULL DEFAULT 0,
+                               version INTEGER NOT NULL DEFAULT 1,
+                               created_at TEXT NOT NULL,
+                               updated_at TEXT NOT NULL,
+                               CHECK ((rule_type = 'identity' AND identity_id IS NOT NULL) OR
+                                      (rule_type <> 'identity' AND identity_id IS NULL))
+                           )"""
+                    )
+                    self._connection.execute(
+                        """INSERT INTO notification_rules_replacement
+                               SELECT id,identity_id,rule_type,email_address,phone_number,
+                                      email_enabled,sms_enabled,version,created_at,updated_at
+                               FROM notification_rules"""
+                    )
+                    self._connection.execute("DROP TABLE notification_rules")
+                    self._connection.execute(
+                        "ALTER TABLE notification_rules_replacement RENAME TO notification_rules"
+                    )
+        finally:
+            self._connection.execute("PRAGMA foreign_keys = ON")
 
     def __enter__(self) -> "EmbeddingStore":
         return self

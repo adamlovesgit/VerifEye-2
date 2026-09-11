@@ -737,20 +737,18 @@ $("#smtp-settings-form").addEventListener("submit",async event=>{
 
 function renderNewRuleTargets(){
   if(!notificationSettings)return;
-  const existingTypes=new Set(notificationSettings.rules.map(rule=>rule.ruleType));
-  const available=notificationSettings.identities.filter(identity=>!notificationSettings.rules.some(rule=>rule.identityId===identity.id));
   const select=$("#new-rule-target");select.innerHTML="";
-  for(const [value,label] of [["unknown_face","Unknown face (whole session)"],["no_face","No face (whole session)"],["system_error","System fallback (processing errors)"]]){if(!existingTypes.has(value)){const option=document.createElement("option");option.value=value;option.textContent=label;select.appendChild(option);}}
-  for(const identity of available){const option=document.createElement("option");option.value=`identity:${identity.id}`;option.textContent=identity.displayName;select.appendChild(option);}
-  $("#add-notification-rule").disabled=!select.options.length;
-  $("#add-notification-rule").title=select.options.length?"Create a notification rule":"Rules already exist for every available target";
+  for(const [value,label] of [["unknown_face","Unknown face (whole session)"],["no_face","No face (whole session)"],["system_error","System fallback (processing errors)"]]){const option=document.createElement("option");option.value=value;option.textContent=label;select.appendChild(option);}
+  for(const identity of notificationSettings.identities){const option=document.createElement("option");option.value=`identity:${identity.id}`;option.textContent=identity.displayName;select.appendChild(option);}
+  $("#add-notification-rule").disabled=false;
+  $("#add-notification-rule").title="Create a notification rule";
 }
 
 $("#add-notification-rule").addEventListener("click",()=>{
   $("#notification-error").textContent="";
   if(!notificationSettings){$("#notification-error").textContent="Notification settings are still loading. Try again in a moment.";return;}
   renderNewRuleTargets();
-  if(!$("#new-rule-target").options.length){$("#notification-error").textContent="Rules already exist for every available target.";return;}
+  if(!$("#new-rule-target").options.length){$("#notification-error").textContent="No notification rule targets are available.";return;}
   $("#new-notification-rule").classList.remove("hidden");$("#new-rule-target").focus();
 });
 $("#cancel-notification-rule").addEventListener("click",()=>$("#new-notification-rule").classList.add("hidden"));

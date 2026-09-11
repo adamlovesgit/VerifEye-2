@@ -82,7 +82,7 @@ class FreshSchemaTests(unittest.TestCase):
             row = store._connection.execute("SELECT role FROM users").fetchone()
             self.assertEqual(row["role"], "admin")
 
-    def test_notification_rule_shape_and_uniqueness_are_enforced(self):
+    def test_notification_rule_shape_is_enforced_and_targets_can_repeat(self):
         with closing(self.connect()) as connection:
             connection.execute(
                 "INSERT INTO identities(external_id,display_name) VALUES('person-1','Ada')"
@@ -103,18 +103,73 @@ class FreshSchemaTests(unittest.TestCase):
                        identity_id,rule_type,email_enabled,sms_enabled,created_at,updated_at
                    ) VALUES(NULL,'unknown_face',0,0,'now','now')"""
             )
-            with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute(
-                    """INSERT INTO notification_rules(
-                           identity_id,rule_type,email_enabled,sms_enabled,created_at,updated_at
-                       ) VALUES(NULL,'unknown_face',0,0,'now','now')"""
-                )
+            connection.execute(
+                """INSERT INTO notification_rules(
+                       identity_id,rule_type,email_enabled,sms_enabled,created_at,updated_at
+                   ) VALUES(NULL,'unknown_face',0,0,'now','now')"""
+            )
+            connection.execute(
+                """INSERT INTO notification_rules(
+                       identity_id,rule_type,email_enabled,sms_enabled,created_at,updated_at
+                   ) VALUES(1,'identity',0,0,'now','now')"""
+            )
             with self.assertRaises(sqlite3.IntegrityError):
                 connection.execute(
                     """INSERT INTO notification_rules(
                            identity_id,rule_type,email_enabled,sms_enabled,created_at,updated_at
                        ) VALUES(1,'no_face',0,0,'now','now')"""
                 )
+
+    def test_legacy_notification_rule_constraints_are_migrated(self):
+        legacy = Path(self.temp.name) / "legacy-notifications.db"
+        with closing(sqlite3.connect(legacy)) as connection:
+            connection.executescript(
+                (Path(__file__).resolve().parents[2] / "src/verifeye/storage/schema.sql").read_text()
+            )
+            connection.execute("DROP TABLE notification_rules")
+            connection.execute(
+                """CREATE TABLE notification_rules (
+                       id INTEGER PRIMARY KEY,
+                       identity_id INTEGER UNIQUE REFERENCES identities(id) ON DELETE CASCADE,
+                       rule_type TEXT NOT NULL CHECK (rule_type IN ('identity', 'unknown_face', 'no_face', 'system_error')),
+                       email_address TEXT, phone_number TEXT,
+                       email_enabled INTEGER NOT NULL DEFAULT 0, sms_enabled INTEGER NOT NULL DEFAULT 0,
+                       version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                       CHECK ((rule_type = 'identity' AND identity_id IS NOT NULL) OR
+                              (rule_type <> 'identity' AND identity_id IS NULL))
+                   )"""
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX ux_notification_rules_session_type "
+                "ON notification_rules(rule_type) WHERE rule_type <> 'identity'"
+            )
+            connection.execute("INSERT INTO identities(external_id,display_name) VALUES('person-1','Ada')")
+            connection.execute(
+                "INSERT INTO cameras(name,encrypted_url,url_fingerprint,sanitized_host) "
+                "VALUES('Door',x'01','door-fingerprint','door.local')"
+            )
+            connection.execute(
+                "INSERT INTO notification_rules(identity_id,rule_type,email_enabled,sms_enabled,created_at,updated_at) "
+                "VALUES(1,'identity',0,0,'now','now')"
+            )
+            connection.execute("INSERT INTO notification_rule_cameras(rule_id,camera_id) VALUES(1,1)")
+            connection.commit()
+        with EmbeddingStore(legacy):
+            pass
+        with closing(sqlite3.connect(legacy)) as connection:
+            self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+            self.assertEqual(
+                connection.execute("SELECT camera_id FROM notification_rule_cameras WHERE rule_id=1").fetchone()[0],
+                1,
+            )
+            connection.execute(
+                "INSERT INTO notification_rules(identity_id,rule_type,email_enabled,sms_enabled,created_at,updated_at) "
+                "VALUES(1,'identity',0,0,'now','now')"
+            )
+            connection.execute(
+                "INSERT INTO notification_rules(identity_id,rule_type,email_enabled,sms_enabled,created_at,updated_at) "
+                "VALUES(NULL,'unknown_face',0,0,'now','now')"
+            )
 
 
 if __name__ == "__main__":

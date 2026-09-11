@@ -96,13 +96,18 @@ class NotificationRepositoryTests(unittest.TestCase):
         with self.assertRaises(NotificationError):
             self.notifications.save_rule({**base, "ruleType":"no_face", "identityId":1})
 
-    def test_session_rule_type_is_unique_and_phone_is_e164(self):
+    def test_session_rule_types_can_repeat_and_phone_is_e164(self):
         payload={"identityId":None,"ruleType":"no_face","emailAddress":"","phoneNumber":"+15551234567",
                  "emailEnabled":False,"smsEnabled":True,"cameraIds":[]}
         self.notifications.save_rule(payload)
-        with self.assertRaises(NotificationError): self.notifications.save_rule(payload)
+        self.notifications.save_rule(payload)
         payload["phoneNumber"]="555"
         with self.assertRaises(NotificationError): self.notifications.save_rule(payload, 1)
+
+    def test_identity_rule_can_repeat_for_the_same_identity(self):
+        self.save_identity_rule()
+        self.save_identity_rule()
+        self.assertEqual(len(self.notifications.settings()["rules"]), 2)
 
     def test_planner_deduplicates_repeated_recognition_results(self):
         rule_id = self.save_identity_rule()
